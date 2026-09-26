@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "workflow": ".github/workflows/ci.yml",
+  "required_commands": [
+    "uv sync --frozen --extra dev",
+    "uv run --frozen pytest",
+    "uv run --frozen ruff check .",
+    "uv run --frozen mypy .adlc/evidence.py .adlc/lifecycle.py .adlc/preflight.py .adlc/adlc_config.py .adlc/gitops.py"
+  ],
+  "required_fragments": {
+    "pyproject.toml": [
+      "select = [\"E4\", \"E7\", \"E9\", \"F\", \"I\", \"UP\", \"B\"]",
+      "check_untyped_defs = true",
+      "warn_unused_ignores = true"
+    ]
+  }
+}

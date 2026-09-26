@@ -59,6 +59,64 @@
     },
     "context": {"type": "object"},
     "git": {"type": "object"},
+    "lifecycle": {
+      "type": "object",
+      "required": [
+        "active_run_id",
+        "current_stage",
+        "completed_stages",
+        "next_permitted_stages",
+        "open"
+      ],
+      "properties": {
+        "active_run_id": {"type": "string"},
+        "current_stage": {
+          "enum": [
+            "specification",
+            "human-specification-approval",
+            "feature-branch",
+            "implementation",
+            "independent-testing",
+            "remediation",
+            "pull-request",
+            "ci",
+            "human-review",
+            "merge",
+            "run-closure",
+            "retrospective"
+          ]
+        },
+        "completed_stages": {"type": "array", "items": {"type": "string"}},
+        "next_permitted_stages": {"type": "array", "items": {"type": "string"}},
+        "open": {"type": "boolean"}
+      },
+      "additionalProperties": false
+    },
+    "governance": {
+      "type": "object",
+      "required": ["controls", "preflight_evidence"],
+      "properties": {
+        "controls": {
+          "type": "object",
+          "required": [
+            "feature_branch",
+            "ci_before_merge",
+            "human_merge",
+            "quality_gate_changes"
+          ],
+          "additionalProperties": {
+            "type": "object",
+            "required": ["enforcement"],
+            "properties": {
+              "enforcement": {"enum": ["procedural", "technical"]}
+            },
+            "additionalProperties": false
+          }
+        },
+        "preflight_evidence": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
     "stages": {
       "type": "object",
       "required": ["spec-it", "specification-approval", "implement-it", "test-it", "ci", "human-review", "merge"],
@@ -82,7 +140,7 @@
         "type": "object",
         "required": ["type", "category", "created_at"],
         "properties": {
-          "type": {"enum": ["file", "reference", "derived"]},
+          "type": {"enum": ["file", "reference", "derived", "repository"]},
           "category": {"type": "string"},
           "path": {"type": "string"},
           "uri": {"type": "string"},
@@ -90,6 +148,8 @@
           "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
           "size": {"type": "integer", "minimum": 0},
           "supporting_evidence": {"type": "array", "items": {"type": "string"}},
+          "repository_path": {"type": "string"},
+          "commit": {"type": "string"},
           "created_at": {"type": "string", "format": "date-time"}
         },
         "additionalProperties": false
