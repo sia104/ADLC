@@ -121,7 +121,7 @@ def test_create_uses_canonical_version_preflight_and_event_journal(
     value = manifest(repo, run_id)
     run_dir = repo / ".adlc" / "evidence" / "runs" / run_id
 
-    assert value["adlc"]["version"] == "V0.4"  # type: ignore[index]
+    assert value["adlc"]["version"] == "V0.5"  # type: ignore[index]
     assert value["lifecycle"]["current_stage"] == "specification"  # type: ignore[index]
     assert value["governance"]["controls"]["human_merge"] == {  # type: ignore[index]
         "enforcement": "procedural"
@@ -376,7 +376,9 @@ def test_preflight_flags_quality_gate_weakening_for_human_approval(
     command("git", "checkout", "-b", "feature/weaken", cwd=repo)
     baseline_path = repo / ".adlc" / "quality-gates.json"
     baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
-    baseline["required_commands"].remove("uv run --frozen pytest")
+    baseline["required_commands"].remove(
+        "uv run --project .adlc --frozen pytest .adlc/tests"
+    )
     baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
 
     result = command(

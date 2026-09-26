@@ -1,170 +1,712 @@
-# ADLC V0.4
+# ADLC Runtime
 
-This directory is the canonical source for the reusable ADLC in this
-repository. `VERSION` is the version authority. The Python tools use only the
-standard library and keep product requirements separate from workflow
-governance.
+Installed reusable ADLC runtime.
 
-## Configuration and startup
+Current ADLC version: **V0.5**
 
-`.adlc/config.json` contains the reusable base branch and GitHub repository
-visibility. This installation uses `master` and `public`.
+This directory contains the deterministic infrastructure used to run and verify the project's AI-assisted Application Development Life Cycle.
 
-New-run creation deterministically bootstraps the project before capturing
-preflight evidence. It verifies Git identity on every run, initialises a missing
-project-local repository, preserves any existing repository and `origin`, and
-uses authenticated GitHub CLI to create a missing remote. A new public remote is
-created only after the publication-safety scan passes. Failures stop before the
-run is created and never invent Git identity or replace a remote.
+It is intentionally separate from the application's own source code, dependencies, tests, and documentation.
 
-## Preflight
+---
 
-Run preflight before starting work:
+## Purpose
+
+The ADLC runtime coordinates and records the reusable development lifecycle:
+
+```text
+user request
+    ↓
+preflight
+    ↓
+evidence run
+    ↓
+specification
+    ↓
+human specification approval
+    ↓
+feature branch
+    ↓
+implementation
+    ↓
+independent testing
+    ↓
+remediation if required
+    ↓
+feature publication
+    ↓
+pull request
+    ↓
+CI
+    ↓
+human review
+    ↓
+human merge
+    ↓
+run closure
+    ↓
+retrospective
+```
+
+Where practical, predictable workflow behaviour is implemented deterministically rather than delegated to an AI agent.
+
+---
+
+# Directory contents
+
+Typical installed structure:
+
+```text
+.adlc/
+├── README.md
+├── VERSION
+├── install.json
+├── config.json
+├── adlc_config.py
+├── evidence.py
+├── gitops.py
+├── lifecycle.py
+├── preflight.py
+├── quality-gates.json
+├── pyproject.toml
+├── uv.lock
+├── schema/
+├── tests/
+└── evidence/
+```
+
+Not every generated directory exists before the first development run.
+
+---
+
+# Version
+
+The installed ADLC version is defined by:
+
+```text
+.adlc/VERSION
+```
+
+For this installation:
+
+```text
+V0.5
+```
+
+The installation source and provenance are recorded in:
+
+```text
+.adlc/install.json
+```
+
+This typically records:
+
+* source repository;
+* Git release/tag;
+* source commit;
+* installation timestamp;
+* installed ADLC version;
+* hashes of managed files.
+
+Do not manually edit `install.json` unless repairing a known installation problem.
+
+---
+
+# Configuration
+
+Reusable project-level ADLC configuration is stored in:
+
+```text
+.adlc/config.json
+```
+
+Typical configuration:
+
+```json
+{
+  "base_branch": "master",
+  "repository_visibility": "public"
+}
+```
+
+## `base_branch`
+
+Defines the repository base branch used by the lifecycle and Git/GitHub automation.
+
+## `repository_visibility`
+
+Controls the default visibility used when the ADLC creates a GitHub repository.
+
+Supported values:
+
+```text
+public
+private
+```
+
+The current installation defaults to `public`.
+
+---
+
+# Preflight
+
+Preflight inspects whether the project is ready for an ADLC run.
+
+It checks items such as:
+
+* ADLC version;
+* repository identity;
+* Git state;
+* base/current branch;
+* remote configuration;
+* required Codex skills;
+* CI presence;
+* evidence subsystem;
+* expected tooling;
+* quality-gate integrity.
+
+Preflight reports problems rather than silently rewriting project configuration.
+
+Run it manually with:
 
 ```bash
 python .adlc/preflight.py --base-branch master
 ```
 
-It reports repository and Git identity, remote and branch context, configured
-visibility, working-tree state, ADLC version, required skills, CI and evidence
-components, tool versions, and quality-gate concerns. It remains inspection-only.
-Missing Git identity is an error before implementation. A reduction in the
-recorded quality-gate baseline requires explicit human approval.
+Normal ADLC run creation may invoke the required bootstrap and preflight behaviour automatically.
 
-## Lifecycle
+---
 
-V0.4 records one deterministic lifecycle in every new manifest:
+# Git and GitHub automation
+
+The ADLC contains deterministic Git/GitHub operations in:
 
 ```text
-specification -> human-specification-approval -> feature-branch
-  -> implementation -> independent-testing
-  -> remediation -> implementation                 (test gap loop)
-  -> pull-request -> ci -> human-review -> merge
-  -> run-closure -> retrospective
+.adlc/gitops.py
 ```
 
-The controller rejects transitions outside these paths. Specification approval,
-remediation approval, CI success, human review, merge context, and the feature
-branch are checked at their applicable boundaries. Feature-branch, CI-before-
-merge, and human-merge controls are recorded as procedural unless a repository
-adds technical platform enforcement.
+Where required, the workflow can:
 
-Start a run from the repository root. The version is read from `.adlc/VERSION`;
-it is not caller-selected. Creation automatically captures preflight evidence.
+* initialise Git;
+* verify Git identity;
+* create or preserve the configured base branch;
+* detect or create `origin`;
+* create a GitHub repository;
+* use configured repository visibility;
+* push the base branch;
+* push feature branches;
+* establish upstream tracking;
+* create pull requests.
+
+Existing repositories and remotes must not be silently replaced.
+
+Human review and merge remain human-controlled steps.
+
+---
+
+# Public publication safety
+
+When repository visibility is `public`, the ADLC performs a narrow deterministic publication safety check before first publication.
+
+It checks for obvious hazards such as:
+
+* private keys;
+* credentials;
+* tokens;
+* `.env` files;
+* common secret-bearing filenames;
+* secret-like assignment patterns;
+* evidence inputs already considered unsafe by the evidence subsystem.
+
+The scanner reports paths and hazard classes without intentionally printing secret values.
+
+This is not a general confidentiality classifier.
+
+It does not determine whether source code, documentation, or project information is commercially, legally, or personally sensitive.
+
+The user remains responsible for deciding whether public publication is appropriate.
+
+---
+
+# Lifecycle
+
+Lifecycle state is implemented in:
+
+```text
+.adlc/lifecycle.py
+```
+
+The state machine prevents invalid workflow progression where practical.
+
+Typical progression:
+
+```text
+specification
+→ human-specification-approval
+→ feature-branch
+→ implementation
+→ independent-testing
+→ pull-request
+→ ci
+→ human-review
+→ merge
+→ closed
+→ retrospective
+```
+
+A remediation loop may occur after independent testing:
+
+```text
+independent-testing
+→ remediation
+→ human decision
+→ implementation
+→ independent-testing
+```
+
+The ADLC does not currently include a separate repair agent.
+
+Approved remediation returns to `implement-it`.
+
+---
+
+# Codex skills
+
+The runtime works with reusable Codex skills installed under:
+
+```text
+.codex/skills/
+```
+
+Expected skills are:
+
+```text
+spec-it
+implement-it
+test-it
+retrospect-it
+```
+
+The skills provide AI-assisted judgement and generation.
+
+The deterministic ADLC runtime provides state, evidence, Git operations, validation, and workflow guardrails.
+
+---
+
+# Evidence
+
+Run evidence is stored under:
+
+```text
+.adlc/evidence/
+```
+
+This directory is normally excluded from Git.
+
+Evidence exists to make development runs reconstructable and to support later ADLC improvement.
+
+A run may record:
+
+* original request;
+* specification;
+* specification approval;
+* skill and constitution hashes;
+* Git state;
+* branch and commit information;
+* implementation outcomes;
+* verification results;
+* CI outcomes;
+* human decisions;
+* failures and interventions;
+* merge context;
+* retrospective observations;
+* candidate lessons.
+
+Raw evidence and derived interpretation remain separate.
+
+---
+
+# Creating an evidence run
+
+Normally the ADLC workflow creates the run when development begins.
+
+A run may also be created manually:
 
 ```bash
 python .adlc/evidence.py create \
   --request-file /path/to/sanitized-request.txt
-
-python .adlc/evidence.py lifecycle RUN_ID
-python .adlc/evidence.py attach RUN_ID outputs specs/example.md
-python .adlc/evidence.py transition RUN_ID human-specification-approval pass \
-  --evidence raw/outputs/example.md
-python .adlc/evidence.py specification RUN_ID raw/outputs/example.md
-python .adlc/evidence.py decision RUN_ID specification approved
-python .adlc/evidence.py transition RUN_ID feature-branch pass
 ```
 
-Create and check out the feature branch before transitioning to
-`implementation`. Use `transition` to batch a completed stage's outcome,
-evidence, and lifecycle advance into one manifest update.
+Run creation uses the canonical ADLC version from:
 
-After independent testing, record the `test-it` pass and run deterministic
-publication. It requires a clean committed feature branch, runs the public
-safety scan, pushes with upstream tracking, creates the PR with GitHub CLI,
-records branch/commit/PR context, and enters `pull-request`:
+```text
+.adlc/VERSION
+```
+
+The caller should not need to manually choose the ADLC version.
+
+---
+
+# Evidence lifecycle
+
+A typical evidence lifecycle is:
+
+```text
+create run
+    ↓
+record stage outcomes
+    ↓
+attach/reference evidence
+    ↓
+record decisions
+    ↓
+record verification and CI
+    ↓
+record Git/PR/merge context
+    ↓
+close run
+    ↓
+retrospective
+    ↓
+candidate lessons
+```
+
+Evidence should not claim workflow steps succeeded before the underlying filesystem, Git, GitHub, CI, or human action actually succeeded.
+
+---
+
+# Raw and derived evidence
+
+Raw evidence is intended to preserve what happened.
+
+Examples:
+
+```text
+request
+specification
+test output
+CI references
+Git information
+human decisions
+failure observations
+```
+
+Derived evidence may include:
+
+```text
+summaries
+traceability
+failure classifications
+candidate lessons
+```
+
+Derived conclusions should reference supporting raw evidence where practical.
+
+AI-generated interpretations do not automatically become policy.
+
+---
+
+# Candidate lessons
+
+`retrospect-it` may create evidence-backed candidate lessons after a development run is complete.
+
+A candidate lesson may propose changes to areas such as:
+
+* deterministic ADLC controls;
+* tests;
+* skills;
+* `AGENTS.md`;
+* CI;
+* documentation;
+* evaluations;
+* no action.
+
+Candidate lessons are proposals only.
+
+Human approval is required before a lesson is promoted into a future ADLC version.
+
+---
+
+# Verification
+
+The installed ADLC has its own isolated Python verification environment.
+
+This avoids depending on the application's own dependency environment.
+
+Synchronise it with:
 
 ```bash
-python .adlc/evidence.py stage RUN_ID test-it pass \
-  --evidence raw/tests/independent-test-report.txt
-python .adlc/evidence.py publish RUN_ID
-python .adlc/evidence.py transition RUN_ID ci pass
+uv sync --project .adlc --frozen --extra dev
 ```
 
-A failed or incomplete independent test may enter `remediation`; a recorded
-human `implementation` decision is required before returning to implementation.
-There is no repair skill.
-
-Record PR, CI, review, and merge context before their guarded transitions:
+Run ADLC tests:
 
 ```bash
-python .adlc/evidence.py merge-context RUN_ID not_merged \
-  --pull-request-number 12 --pull-request-url https://github.com/o/r/pull/12
-python .adlc/evidence.py ci RUN_ID pass --workflow-run 12345
-python .adlc/evidence.py decision RUN_ID merge approved
-python .adlc/evidence.py merge-context RUN_ID merged --final-commit COMMIT
-python .adlc/evidence.py close RUN_ID
-python .adlc/evidence.py validate RUN_ID
+uv run --project .adlc --frozen pytest .adlc/tests
 ```
 
-Publication failures leave lifecycle and publication evidence unadvanced. CI
-must pass before human review. Humans remain solely responsible for review and
-merge; V0.4 never enables auto-merge.
-
-## Public publication safety
-
-Before the first public push, V0.4 scans project files for narrow deterministic
-hazards: obvious environment/credential/key filenames, private-key headers, and
-credential assignments. It reports only paths and hazard classes, never matched
-values. `.git`, generated caches, and local ADLC evidence are excluded. A
-finding blocks repository creation or push. This is not a commercial-sensitivity
-classifier.
-
-## Failure recovery
-
-Bootstrap errors identify the missing prerequisite and leave later lifecycle
-state unadvanced. Configure a real Git identity with `git config user.name` and
-`git config user.email`; authenticate GitHub CLI with `gh auth login`; remove
-reported publication hazards without exposing their values; then rerun the same
-command. Existing `origin` values are never replaced automatically.
-
-## Evidence
-
-Each V0.4 run contains a current `manifest.json`, immutable raw and derived
-artifacts, and a hash-chained append-only `events/` journal. Updates are guarded
-by a process lock and written atomically. The journal records compact changed-
-field hashes instead of copying the complete manifest on every update. Existing
-V0.3 and V0.2 runs remain readable and valid.
-
-`.adlc/evidence/` is ignored by Git and stays local. Bootstrap and publication
-never stage or upload it. Back up local evidence separately if retention beyond
-the working copy is required.
-
-`attach` stores UTF-8 text up to 1 MB, rejects likely secrets, writes
-exclusively, and deduplicates matching category/content evidence. Use `reference`
-for external or binary evidence. Use `identify` for a clean, committed repository
-file; it records path, commit, and content hash without copying the file.
+Run ADLC linting:
 
 ```bash
-python .adlc/evidence.py identify RUN_ID outputs specs/example.md
-python .adlc/evidence.py derive RUN_ID traceability report.txt \
-  --support raw/tests/test-output.txt
+uv run --project .adlc --frozen ruff check .adlc
 ```
 
-Derived evidence must cite registered raw evidence. Never collect credentials,
-tokens, private keys, environment files, signed URLs, or irrelevant personal
-data.
-
-## Retrospective
-
-`retrospect-it` operates only on closed runs. It may observe evidence and create
-candidate lessons, but it cannot change policy, skills, CI, tests, schemas, ADLC
-code, or product code. Candidates remain proposals until a separate human
-decision is appended.
+Run ADLC type checking:
 
 ```bash
-python .adlc/evidence.py lesson-create stable-lesson-id \
-  --observation "Observed behaviour" \
-  --support RUN_ID:raw/observations/example.txt \
-  --why "Why the pattern matters" \
-  --target deterministic-adlc-control
+uv run --project .adlc --frozen mypy \
+  .adlc/evidence.py \
+  .adlc/lifecycle.py \
+  .adlc/preflight.py \
+  .adlc/adlc_config.py \
+  .adlc/gitops.py
 ```
 
-## Portability
+The reusable quality-gate definition is stored in:
 
-Copy `.adlc/` without its local `evidence/` contents, the four `.codex/skills/`
-directories, the concise constitution
-rules in `AGENTS.md`, and the ADLC tests into another repository. Replace the
-repository-specific entries in `quality-gates.json` with that repository's
-existing deterministic gates. These entries are a local baseline, not universal
-ADLC product requirements.
+```text
+.adlc/quality-gates.json
+```
+
+Existing deterministic quality gates must not be silently weakened.
+
+---
+
+# CI
+
+The installed reusable ADLC workflow is:
+
+```text
+.github/workflows/adlc.yml
+```
+
+Its purpose is to verify the ADLC infrastructure itself.
+
+The application's own CI remains separate.
+
+For example:
+
+```text
+.github/workflows/adlc.yml
+    → ADLC infrastructure
+
+.github/workflows/ci.yml
+    → application/product verification
+```
+
+The ADLC does not assume every consuming application uses Python.
+
+---
+
+# Starting development
+
+Once the ADLC is installed, normal user interaction should be minimal.
+
+A user should be able to provide a product request such as:
+
+```text
+Build a simple web application that ...
+```
+
+The repository's ADLC should then recognise the workflow and progress through the appropriate stages.
+
+Users should not normally need to repeatedly instruct Codex to:
+
+* start evidence capture;
+* invoke `spec-it`;
+* create a feature branch;
+* invoke `test-it`;
+* push the branch;
+* create a pull request.
+
+The workflow should carry these reusable responsibilities itself.
+
+Human intervention should remain focused on genuine decisions.
+
+---
+
+# Human gates
+
+Important human-controlled gates currently include:
+
+* specification approval;
+* remediation approval where required;
+* final review;
+* merge;
+* candidate-lesson promotion.
+
+The ADLC must not silently convert these procedural gates into automated actions.
+
+---
+
+# Failure handling
+
+When a workflow step fails:
+
+1. record the failure where appropriate;
+2. avoid advancing lifecycle state falsely;
+3. isolate the likely root cause;
+4. avoid bundling unrelated corrective changes where practical;
+5. rerun the affected deterministic verification;
+6. continue only when the lifecycle requirements are satisfied.
+
+A failed external GitHub operation must not leave PR, CI, or merge state recorded as successful.
+
+---
+
+# Managed files
+
+Files installed by `adlc-bootstrap` are ADLC-managed infrastructure.
+
+Installation provenance and hashes are stored in:
+
+```text
+.adlc/install.json
+```
+
+V0.5 does not currently implement automatic upgrades or managed-file merging.
+
+Do not assume that manually modified ADLC files can later be upgraded automatically without conflict.
+
+---
+
+# Local evidence
+
+The following is intentionally local by default:
+
+```text
+.adlc/evidence/
+```
+
+Do not commit run evidence automatically.
+
+Evidence can contain:
+
+* prompts;
+* human feedback;
+* debugging information;
+* internal observations;
+* failure details.
+
+Even when it contains no passwords or tokens, it may still contain information inappropriate for public publication.
+
+---
+
+# Troubleshooting
+
+## Unknown ADLC version
+
+Check:
+
+```bash
+cat .adlc/VERSION
+```
+
+The runtime code and canonical version must agree.
+
+For this release:
+
+```text
+V0.5
+```
+
+## Git identity missing
+
+Check:
+
+```bash
+git config user.name
+git config user.email
+```
+
+The ADLC does not invent a user identity.
+
+## GitHub CLI unavailable
+
+Check:
+
+```bash
+gh --version
+```
+
+## GitHub authentication unavailable
+
+Check:
+
+```bash
+gh auth status
+```
+
+## ADLC tests failing
+
+Run:
+
+```bash
+uv run --project .adlc --frozen pytest .adlc/tests -q
+```
+
+Then fix the ADLC infrastructure problem before continuing development.
+
+## Quality gate reported as weakened
+
+Compare:
+
+```text
+.adlc/quality-gates.json
+```
+
+against the base branch.
+
+Changes that weaken deterministic verification require explicit human approval.
+
+---
+
+# What V0.5 does not do
+
+V0.5 intentionally does not provide:
+
+* automatic ADLC upgrades;
+* automatic conflict merging;
+* automatic human review;
+* automatic merge;
+* autonomous ADLC self-modification;
+* automatic promotion of lessons;
+* general-purpose workflow orchestration;
+* database-backed evidence;
+* dashboards;
+* plugin dependency management.
+
+These capabilities should only be introduced when real usage provides evidence that they are needed.
+
+---
+
+# Design principle
+
+The ADLC follows a simple ratchet model:
+
+```text
+run software project
+      ↓
+collect evidence
+      ↓
+observe failure/friction
+      ↓
+propose improvement
+      ↓
+human review
+      ↓
+improve ADLC
+      ↓
+repeat
+```
+
+The objective is not maximum automation.
+
+The objective is a development process that becomes progressively more:
+
+* reliable;
+* testable;
+* measurable;
+* reproducible;
+* reusable;
+* appropriately autonomous.
