@@ -1,4 +1,4 @@
-"""Deterministic ADLC V0.3 lifecycle state machine."""
+"""Deterministic ADLC V0.4 lifecycle state machine."""
 
 from __future__ import annotations
 

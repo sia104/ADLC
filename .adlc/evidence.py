@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from adlc_config import ConfigError, load_config
+from gitops import GitOpsError, bootstrap_project, publish_feature
 from lifecycle import (
     LIFECYCLE_STAGES,
     LifecycleError,
@@ -33,6 +35,7 @@ from preflight import EXPECTED_ADLC_VERSION, run_preflight
 
 SCHEMA_VERSION = "1.0"
 EVENT_SCHEMA_VERSION = "1.0"
+LIFECYCLE_VERSIONS = {"V0.3", "V0.4"}
 RAW_CATEGORIES = (
     "inputs",
     "outputs",
@@ -53,6 +56,10 @@ STAGES = (
     "merge",
 )
 OUTCOMES = ("not_run", "running", "pass", "fail", "incomplete", "blocked")
+
+
+def has_lifecycle(manifest: dict[str, Any]) -> bool:
+    return manifest.get("adlc", {}).get("version") in LIFECYCLE_VERSIONS
 LESSON_TARGETS = (
     "product-test",
     "deterministic-adlc-control",
@@ -369,9 +376,9 @@ def validate_manifest(manifest: dict[str, Any], expected_run_id: str) -> None:
         raise EvidenceError("adlc.version must be a non-empty string")
     require_list(adlc.get("skills"), "adlc.skills")
     require_mapping(manifest["context"], "context")
-    require_mapping(manifest["git"], "git")
+    git_context = require_mapping(manifest["git"], "git")
 
-    if adlc["version"] == EXPECTED_ADLC_VERSION:
+    if adlc["version"] in LIFECYCLE_VERSIONS:
         try:
             lifecycle = lifecycle_from_dict(
                 require_mapping(manifest.get("lifecycle"), "lifecycle")
@@ -395,6 +402,31 @@ def validate_manifest(manifest: dict[str, Any], expected_run_id: str) -> None:
             )
             if value.get("enforcement") not in {"procedural", "technical"}:
                 raise EvidenceError(f"governance control {control} lacks enforcement")
+        history = (*lifecycle.completed_stages, lifecycle.current_stage)
+        if adlc["version"] == EXPECTED_ADLC_VERSION and "pull-request" in history:
+            pull_request = require_mapping(
+                git_context.get("pull_request"), "git.pull_request"
+            )
+            publication = require_mapping(
+                git_context.get("publication"), "git.publication"
+            )
+            if not pull_request.get("url") or not pull_request.get("number"):
+                raise EvidenceError("pull-request lifecycle lacks PR context")
+            for field in ("remote", "branch", "commit"):
+                if not publication.get(field):
+                    raise EvidenceError(
+                        f"pull-request lifecycle lacks publication {field}"
+                    )
+        if (
+            adlc["version"] == EXPECTED_ADLC_VERSION
+            and "merge" in lifecycle.completed_stages
+        ):
+            if stages := manifest.get("stages"):
+                merge_stage = require_mapping(stages.get("merge"), "stages.merge")
+                if merge_stage.get("status") != "pass":
+                    raise EvidenceError(
+                        "completed merge lifecycle requires a passing merge stage"
+                    )
 
     stages = require_mapping(manifest["stages"], "stages")
     for stage in STAGES:
@@ -471,7 +503,7 @@ def update_manifest(
         changed = update(manifest)
         if changed is False:
             return manifest
-        if manifest["adlc"]["version"] != EXPECTED_ADLC_VERSION:
+        if not has_lifecycle(manifest):
             history = run_directory(root, run_id) / "raw" / "manifest-history"
             write_json_new(
                 history / f"revision-{revision:04d}.json", before, readonly=True
@@ -479,7 +511,7 @@ def update_manifest(
         manifest["revision"] = revision + 1
         manifest["updated_at"] = utc_now()
         validate_manifest(manifest, run_id)
-        if manifest["adlc"]["version"] == EXPECTED_ADLC_VERSION:
+        if has_lifecycle(manifest):
             append_event(root, run_id, event_type, before, manifest)
         atomic_write_json(path, manifest)
         return manifest
@@ -529,6 +561,15 @@ def create_run(args: argparse.Namespace) -> None:
             f"--adlc-version {args.adlc_version!r} conflicts with canonical "
             f"version {adlc_version!r}"
         )
+    try:
+        config = load_config(root)
+        if args.base_branch and args.base_branch != config.base_branch:
+            raise EvidenceError(
+                "--base-branch conflicts with configured ADLC base_branch"
+            )
+        bootstrap_project(project_root, config)
+    except (ConfigError, GitOpsError) as error:
+        raise EvidenceError(str(error)) from error
     run_id = args.run_id or new_run_id()
     validate_identifier(run_id, "run ID")
     for label in ("project", "harness", "model"):
@@ -543,7 +584,7 @@ def create_run(args: argparse.Namespace) -> None:
     for category in DERIVED_CATEGORIES:
         (directory / "derived" / category).mkdir(parents=True, exist_ok=False)
 
-    base_branch = args.base_branch or detected_base_branch(project_root)
+    base_branch = config.base_branch
     preflight = run_preflight(project_root, root, base_branch)
     preflight_path = directory / "raw" / "observations" / "preflight.json"
     write_json_new(preflight_path, preflight, readonly=True)
@@ -616,6 +657,12 @@ def create_run(args: argparse.Namespace) -> None:
             "branch": run_command("git", "branch", "--show-current", cwd=project_root),
             "base_branch": base_branch,
             "commits": [git_commit] if git_commit else [],
+            "origin": sanitized_repository_url(
+                run_command(
+                    "git", "config", "--get", "remote.origin.url", cwd=project_root
+                )
+            ),
+            "publication": {"remote": None, "branch": None, "commit": None},
             "pull_request": {"number": None, "url": None},
             "merge_status": "not_merged",
         },
@@ -948,6 +995,17 @@ def enforce_transition(
         ):
             raise EvidenceError("remediation requires an approved human decision")
         manifest["git"]["branch"] = branch
+    if (
+        current == "independent-testing"
+        and target == "pull-request"
+        and manifest["adlc"]["version"] == EXPECTED_ADLC_VERSION
+    ):
+        publication = manifest["git"].get("publication", {})
+        pull_request = manifest["git"].get("pull_request", {})
+        if not all(publication.get(field) for field in ("remote", "branch", "commit")):
+            raise EvidenceError("pull request requires recorded feature publication")
+        if not pull_request.get("url") or not pull_request.get("number"):
+            raise EvidenceError("pull request requires recorded PR context")
     if current == "pull-request":
         if not manifest["git"]["pull_request"].get("url"):
             raise EvidenceError("CI requires a recorded pull request")
@@ -1019,7 +1077,7 @@ def specification_command(args: argparse.Namespace) -> None:
 
     def record(manifest: dict[str, Any]) -> None:
         ensure_evidence_refs(manifest, [args.evidence])
-        if manifest["adlc"]["version"] == EXPECTED_ADLC_VERSION:
+        if has_lifecycle(manifest):
             state = lifecycle_from_dict(manifest["lifecycle"])
             if state.current_stage != "human-specification-approval":
                 raise EvidenceError(
@@ -1100,7 +1158,7 @@ def decision_command(args: argparse.Namespace) -> None:
 
     def record(manifest: dict[str, Any]) -> None:
         ensure_evidence_refs(manifest, args.evidence)
-        if manifest["adlc"]["version"] == EXPECTED_ADLC_VERSION:
+        if has_lifecycle(manifest):
             current = lifecycle_from_dict(manifest["lifecycle"]).current_stage
             expected = {
                 "specification": "human-specification-approval",
@@ -1151,7 +1209,7 @@ def close_command(args: argparse.Namespace) -> None:
     def close(manifest: dict[str, Any]) -> None:
         if manifest["ended_at"] is not None:
             raise EvidenceError("run is already closed")
-        if manifest["adlc"]["version"] == EXPECTED_ADLC_VERSION:
+        if has_lifecycle(manifest):
             try:
                 state = lifecycle_from_dict(manifest["lifecycle"])
                 enforce_transition(
@@ -1160,11 +1218,108 @@ def close_command(args: argparse.Namespace) -> None:
                 manifest["lifecycle"] = advance_lifecycle(
                     state, "run-closure"
                 ).as_dict()
+                manifest["stages"]["merge"] = {
+                    "status": "pass",
+                    "evidence": manifest["stages"]["merge"].get("evidence", []),
+                    "recorded_at": utc_now(),
+                }
             except LifecycleError as error:
                 raise EvidenceError(str(error)) from error
         manifest["ended_at"] = utc_now()
 
     update_manifest(root, args.run_id, close, event_type="run.closed")
+
+
+def publish_command(args: argparse.Namespace) -> None:
+    root = Path(args.root).resolve()
+    project_root = Path.cwd().resolve()
+    manifest = load_manifest(root, args.run_id)
+    if manifest["adlc"]["version"] != EXPECTED_ADLC_VERSION:
+        raise EvidenceError("publication automation requires an ADLC V0.4 run")
+    state = lifecycle_from_dict(manifest["lifecycle"])
+    if state.current_stage != "independent-testing":
+        raise EvidenceError("publication requires the independent-testing stage")
+    if manifest["stages"]["test-it"]["status"] != "pass":
+        raise EvidenceError("publication requires passing independent testing")
+    passed_checks = [
+        item["name"]
+        for field in ("tests", "quality_gates", "runtime_e2e")
+        for item in manifest["verification"][field]
+        if item.get("status") == "pass"
+    ]
+    verification_summary = (
+        "Passed: " + ", ".join(dict.fromkeys(passed_checks))
+        if passed_checks
+        else "Independent testing recorded as passed."
+    )
+    def record_pushed(remote: str, branch: str, commit: str) -> None:
+        def record(value: dict[str, Any]) -> None:
+            current = lifecycle_from_dict(value["lifecycle"])
+            if current.current_stage != "independent-testing":
+                raise EvidenceError("lifecycle changed during publication")
+            value["git"]["origin"] = sanitized_repository_url(remote)
+            value["git"]["publication"] = {
+                "remote": "origin",
+                "branch": branch,
+                "commit": commit,
+            }
+            value["git"].pop("publication_blocker", None)
+            value["project"]["repository"] = sanitized_repository_url(remote)
+
+        update_manifest(root, args.run_id, record, event_type="publication.pushed")
+
+    try:
+        config = load_config(root)
+        result = publish_feature(
+            project_root,
+            config,
+            verification_summary=verification_summary,
+            on_pushed=record_pushed,
+        )
+    except (ConfigError, GitOpsError) as error:
+        error_message = str(error)
+
+        def record_blocker(value: dict[str, Any]) -> None:
+            value["git"]["publication_blocker"] = {
+                "message": error_message,
+                "recorded_at": utc_now(),
+            }
+
+        update_manifest(
+            root, args.run_id, record_blocker, event_type="publication.blocked"
+        )
+        raise EvidenceError(str(error)) from error
+
+    def record(value: dict[str, Any]) -> None:
+        current = lifecycle_from_dict(value["lifecycle"])
+        if current.current_stage != "independent-testing":
+            raise EvidenceError("lifecycle changed during publication")
+        value["git"].pop("publication_blocker", None)
+        value["git"]["pull_request"] = {
+            "number": result.pull_request_number,
+            "url": result.pull_request_url,
+        }
+        value["project"]["repository"] = sanitized_repository_url(result.remote)
+        value["stages"]["test-it"] = {
+            "status": "pass",
+            "evidence": value["stages"]["test-it"].get("evidence", []),
+            "recorded_at": utc_now(),
+        }
+        value["lifecycle"] = advance_lifecycle(current, "pull-request").as_dict()
+
+    update_manifest(root, args.run_id, record, event_type="publication.completed")
+    print(
+        json.dumps(
+            {
+                "remote": "origin",
+                "branch": result.branch,
+                "commit": result.commit,
+                "pull_request_number": result.pull_request_number,
+                "pull_request_url": result.pull_request_url,
+            },
+            sort_keys=True,
+        )
+    )
 
 
 def merge_context_command(args: argparse.Namespace) -> None:
@@ -1173,7 +1328,7 @@ def merge_context_command(args: argparse.Namespace) -> None:
         validate_reference_uri(args.pull_request_url)
 
     def record(manifest: dict[str, Any]) -> None:
-        if manifest["adlc"]["version"] == EXPECTED_ADLC_VERSION:
+        if has_lifecycle(manifest):
             current = lifecycle_from_dict(manifest["lifecycle"]).current_stage
             if args.pull_request_url and current != "pull-request":
                 raise EvidenceError(
@@ -1241,7 +1396,7 @@ def validate_command(args: argparse.Namespace) -> None:
     root = Path(args.root).resolve()
     manifest = load_manifest(root, args.run_id)
     validate_artifacts(root, args.run_id, manifest)
-    if manifest["adlc"]["version"] == EXPECTED_ADLC_VERSION:
+    if has_lifecycle(manifest):
         validate_events(root, args.run_id, manifest)
     print(f"valid run: {args.run_id}")
 
@@ -1398,6 +1553,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     transition.add_argument("--evidence", action="append", default=[])
     transition.set_defaults(handler=transition_command)
+
+    publish = subparsers.add_parser(
+        "publish", help="push a verified feature branch and create its pull request"
+    )
+    publish.add_argument("run_id")
+    publish.set_defaults(handler=publish_command)
 
     specification = subparsers.add_parser(
         "specification", help="record the approved specification reference"

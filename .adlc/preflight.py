@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-EXPECTED_ADLC_VERSION = "V0.3"
+from adlc_config import ConfigError, load_config
+from gitops import GitOpsError, git_identity, is_project_repository
+
+EXPECTED_ADLC_VERSION = "V0.4"
 REQUIRED_SKILLS = ("spec-it", "implement-it", "test-it", "retrospect-it")
 
 
@@ -151,9 +154,15 @@ def run_preflight(
 ) -> dict[str, Any]:
     project_root = project_root.resolve()
     adlc_root = adlc_root.resolve()
+    problems: list[dict[str, Any]] = []
+    try:
+        config = load_config(adlc_root)
+    except ConfigError as error:
+        config = None
+        problems.append(issue("invalid-adlc-config", str(error)))
     remote = command_output(project_root, "git", "config", "--get", "remote.origin.url")
     branch = command_output(project_root, "git", "branch", "--show-current")
-    base = base_branch or "main"
+    base = base_branch or (config.base_branch if config else "main")
     status = command_output(project_root, "git", "status", "--porcelain")
     version_path = adlc_root / "VERSION"
     version = (
@@ -162,7 +171,17 @@ def run_preflight(
         else None
     )
     ci_files = sorted((project_root / ".github" / "workflows").glob("*.y*ml"))
-    problems: list[dict[str, Any]] = []
+    if not is_project_repository(project_root):
+        problems.append(
+            issue(
+                "missing-project-git-repository",
+                "Project root is not the top level of a Git repository",
+            )
+        )
+    try:
+        git_identity(project_root)
+    except GitOpsError as error:
+        problems.append(issue("missing-git-identity", str(error)))
 
     repository_name = remote_name(remote)
     if repository_name and repository_name.casefold() != project_root.name.casefold():
@@ -245,6 +264,9 @@ def run_preflight(
             "required_skills": list(REQUIRED_SKILLS),
             "ci_configuration_present": bool(ci_files),
             "evidence_subsystem_present": (adlc_root / "evidence.py").is_file(),
+            "repository_visibility": (
+                config.repository_visibility if config is not None else None
+            ),
         },
         "tooling": {
             "python": platform.python_version(),

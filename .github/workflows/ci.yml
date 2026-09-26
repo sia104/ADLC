@@ -32,4 +32,4 @@ jobs:
         run: uv run --frozen ruff check .
 
       - name: Run mypy
-        run: uv run --frozen mypy src tests .adlc/evidence.py .adlc/lifecycle.py .adlc/preflight.py
+        run: uv run --frozen mypy .adlc/evidence.py .adlc/lifecycle.py .adlc/preflight.py .adlc/adlc_config.py .adlc/gitops.py

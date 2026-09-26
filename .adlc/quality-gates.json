@@ -5,7 +5,7 @@
     "uv sync --frozen --extra dev",
     "uv run --frozen pytest",
     "uv run --frozen ruff check .",
-    "uv run --frozen mypy src tests .adlc/evidence.py .adlc/lifecycle.py .adlc/preflight.py"
+    "uv run --frozen mypy .adlc/evidence.py .adlc/lifecycle.py .adlc/preflight.py .adlc/adlc_config.py .adlc/gitops.py"
   ],
   "required_fragments": {
     "pyproject.toml": [

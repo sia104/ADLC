@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -10,7 +11,7 @@ from typing import Any, cast
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def command(
@@ -43,6 +44,7 @@ def make_repository(tmp_path: Path) -> tuple[Path, Path]:
     shutil.copytree(PROJECT_ROOT / ".codex", repo / ".codex")
     shutil.copytree(PROJECT_ROOT / ".github", repo / ".github")
     shutil.copy2(PROJECT_ROOT / "AGENTS.md", repo / "AGENTS.md")
+    shutil.copy2(PROJECT_ROOT / ".gitignore", repo / ".gitignore")
     shutil.copy2(PROJECT_ROOT / "pyproject.toml", repo / "pyproject.toml")
 
     command("git", "init", "-b", "master", cwd=repo)
@@ -79,6 +81,38 @@ def manifest(repo: Path, run_id: str) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def install_fake_gh(
+    directory: Path, monkeypatch: pytest.MonkeyPatch, remote: Path
+) -> None:
+    binary = directory / "gh"
+    binary.write_text(
+        f"""#!{sys.executable}
+import json
+import subprocess
+import sys
+
+args = sys.argv[1:]
+if args[:2] == ["auth", "status"]:
+    raise SystemExit(0)
+if args[:2] == ["repo", "create"]:
+    subprocess.run(["git", "init", "--bare", {str(remote)!r}], check=True)
+    subprocess.run(["git", "remote", "add", "origin", {str(remote)!r}], check=True)
+    print("https://example.invalid/example/repository")
+    raise SystemExit(0)
+if args[:2] == ["pr", "create"]:
+    print("https://example.invalid/example/repository/pull/7")
+    raise SystemExit(0)
+if args[:2] == ["pr", "view"]:
+    print(json.dumps({{"number": 7, "url": "https://example.invalid/example/repository/pull/7"}}))
+    raise SystemExit(0)
+raise SystemExit(2)
+""",
+        encoding="utf-8",
+    )
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
+
+
 def test_create_uses_canonical_version_preflight_and_event_journal(
     tmp_path: Path,
 ) -> None:
@@ -87,7 +121,7 @@ def test_create_uses_canonical_version_preflight_and_event_journal(
     value = manifest(repo, run_id)
     run_dir = repo / ".adlc" / "evidence" / "runs" / run_id
 
-    assert value["adlc"]["version"] == "V0.3"  # type: ignore[index]
+    assert value["adlc"]["version"] == "V0.4"  # type: ignore[index]
     assert value["lifecycle"]["current_stage"] == "specification"  # type: ignore[index]
     assert value["governance"]["controls"]["human_merge"] == {  # type: ignore[index]
         "enforcement": "procedural"
@@ -227,7 +261,9 @@ def test_controller_blocks_invalid_transition_and_supports_remediation(
     assert manifest(repo, run_id)["lifecycle"]["current_stage"] == "implementation"  # type: ignore[index]
 
 
-def test_closed_run_can_enter_retrospective_and_propose_only(tmp_path: Path) -> None:
+def test_closed_run_can_enter_retrospective_and_propose_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     repo, _ = make_repository(tmp_path)
     run_id = create_run(repo, tmp_path)
     open_lesson = adlc(
@@ -265,18 +301,26 @@ def test_closed_run_can_enter_retrospective_and_propose_only(tmp_path: Path) -> 
     adlc(repo, "transition", run_id, "feature-branch", "pass")
     adlc(repo, "transition", run_id, "implementation", "pass")
     adlc(repo, "transition", run_id, "independent-testing", "pass")
-    adlc(repo, "transition", run_id, "pull-request", "pass")
-    command("git", "push", "-u", "origin", "feature/complete", cwd=repo)
-    adlc(
-        repo,
-        "merge-context",
-        run_id,
-        "not_merged",
-        "--pull-request-number",
-        "1",
-        "--pull-request-url",
-        "https://example.invalid/org/repo/pull/1",
+    premature = adlc(
+        repo, "transition", run_id, "pull-request", "pass", check=False
     )
+    assert premature.returncode == 2
+    assert "recorded feature publication" in premature.stderr
+    adlc(repo, "stage", run_id, "test-it", "pass")
+    (repo / ".adlc/config.json").write_text(
+        json.dumps(
+            {"base_branch": "master", "repository_visibility": "private"}
+        ),
+        encoding="utf-8",
+    )
+    command("git", "add", ".adlc/config.json", cwd=repo)
+    command("git", "commit", "-m", "Use private test publication", cwd=repo)
+    install_fake_gh(tmp_path, monkeypatch, tmp_path / "unused.git")
+    publication = adlc(repo, "publish", run_id, check=False)
+    assert publication.returncode == 0, publication.stderr
+    published = manifest(repo, run_id)
+    assert published["git"]["pull_request"]["number"] == 7  # type: ignore[index]
+    assert published["git"]["publication"]["branch"] == "feature/complete"  # type: ignore[index]
     adlc(repo, "transition", run_id, "ci", "pass")
     adlc(repo, "ci", run_id, "pass", "--workflow-run", "ci-1")
     adlc(repo, "transition", run_id, "human-review", "pass")
@@ -285,6 +329,16 @@ def test_closed_run_can_enter_retrospective_and_propose_only(tmp_path: Path) -> 
     head = command("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
     adlc(repo, "merge-context", run_id, "merged", "--final-commit", head)
     adlc(repo, "close", run_id)
+    assert manifest(repo, run_id)["stages"]["merge"]["status"] == "pass"  # type: ignore[index]
+    manifest_path = repo / ".adlc/evidence/runs" / run_id / "manifest.json"
+    closed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    inconsistent = json.loads(json.dumps(closed_manifest))
+    inconsistent["stages"]["merge"]["status"] = "not_run"
+    manifest_path.write_text(json.dumps(inconsistent), encoding="utf-8")
+    rejected = adlc(repo, "validate", run_id, check=False)
+    assert rejected.returncode == 2
+    assert "passing merge stage" in rejected.stderr
+    manifest_path.write_text(json.dumps(closed_manifest), encoding="utf-8")
     adlc(repo, "transition", run_id, "retrospective", "pass")
     adlc(
         repo,
