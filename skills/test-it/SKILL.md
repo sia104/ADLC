@@ -25,6 +25,9 @@ Rules:
   merge changes.
 - Remain independent from `implement-it`: report implementation failures rather
   than silently repairing them.
+- When a real implementation gap is found, record it and stop for a human
+  decision. An approved correction returns to `implement-it`, then `test-it`
+  reruns in the same evidence run. Do not create or invoke a repair skill.
 
 Select only relevant testing layers:
 1. Unit tests for functions, components, and deterministic algorithms.

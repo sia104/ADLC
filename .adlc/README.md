@@ -1,83 +1,112 @@
-# ADLC Evidence
+# ADLC V0.3
 
-This directory contains a reusable, filesystem-based evidence bundle for ADLC
-runs. It stores structured metadata and small text artifacts without requiring a
-database or adding an evidence-collection agent.
+This directory is the canonical source for the reusable ADLC in this
+repository. `VERSION` is the version authority. The Python tools use only the
+standard library and keep product requirements separate from workflow
+governance.
 
-## Layout
+## Preflight
 
-```text
-.adlc/
-|-- evidence.py
-|-- schema/
-|   |-- run-manifest.schema.json
-|   |-- candidate-lesson.schema.json
-|   `-- lesson-status.schema.json
-`-- evidence/
-    |-- runs/<run-id>/
-    |   |-- manifest.json
-    |   |-- raw/
-    |   |   |-- inputs/ outputs/ tests/ ci/ decisions/ logs/ observations/
-    |   |   `-- manifest-history/
-    |   `-- derived/
-    |       `-- summaries/ traceability/ failures/
-    `-- lessons/<lesson-id>/
-        |-- candidate.json
-        `-- status/
+Run preflight before starting work:
+
+```bash
+python .adlc/preflight.py --base-branch master
 ```
 
-Raw files are source evidence. Derived summaries, traceability, classifications,
-and candidate lessons are interpretations and must reference raw evidence where
-practical. They never automatically change policy, skills, CI, tests, or product
-requirements.
+It reports repository identity, remote and branch context, working-tree state,
+ADLC version, required skills, CI and evidence components, tool versions, and
+quality-gate concerns. It never rewrites configuration. A reduction in the
+repository's recorded quality-gate baseline is flagged as requiring explicit
+human approval.
 
-## Start And Record A Run
+## Lifecycle
 
-Run the CLI from the repository root. A caller may provide a stable run ID, or
-omit it to generate a timestamp-and-random-suffix ID.
+V0.3 records one deterministic lifecycle in every new manifest:
+
+```text
+specification -> human-specification-approval -> feature-branch
+  -> implementation -> independent-testing
+  -> remediation -> implementation                 (test gap loop)
+  -> pull-request -> ci -> human-review -> merge
+  -> run-closure -> retrospective
+```
+
+The controller rejects transitions outside these paths. Specification approval,
+remediation approval, CI success, human review, merge context, and the feature
+branch are checked at their applicable boundaries. Feature-branch, CI-before-
+merge, and human-merge controls are recorded as procedural unless a repository
+adds technical platform enforcement.
+
+Start a run from the repository root. The version is read from `.adlc/VERSION`;
+it is not caller-selected. Creation automatically captures preflight evidence.
 
 ```bash
 python .adlc/evidence.py create \
-  --adlc-version V0.2 \
   --base-branch master \
   --request-file /path/to/sanitized-request.txt
 
+python .adlc/evidence.py lifecycle RUN_ID
 python .adlc/evidence.py attach RUN_ID outputs specs/example.md
-python .adlc/evidence.py specification RUN_ID raw/outputs/example.md
-python .adlc/evidence.py stage RUN_ID spec-it pass \
+python .adlc/evidence.py transition RUN_ID human-specification-approval pass \
   --evidence raw/outputs/example.md
+python .adlc/evidence.py specification RUN_ID raw/outputs/example.md
 python .adlc/evidence.py decision RUN_ID specification approved
-python .adlc/evidence.py verification RUN_ID test unit-suite pass
-python .adlc/evidence.py gate RUN_ID ruff pass
+python .adlc/evidence.py transition RUN_ID feature-branch pass
+```
+
+Create and check out the feature branch before transitioning to
+`implementation`. Use `transition` to batch a completed stage's outcome,
+evidence, and lifecycle advance into one manifest update.
+
+After independent testing, a passing outcome enters `pull-request`. A failed or
+incomplete outcome may enter `remediation`; a recorded human `implementation`
+decision is then required before returning to implementation. There is no
+repair skill.
+
+Record PR, CI, review, and merge context before their guarded transitions:
+
+```bash
+python .adlc/evidence.py merge-context RUN_ID not_merged \
+  --pull-request-number 12 --pull-request-url https://github.com/o/r/pull/12
+python .adlc/evidence.py ci RUN_ID pass --workflow-run 12345
+python .adlc/evidence.py decision RUN_ID merge approved
+python .adlc/evidence.py merge-context RUN_ID merged --final-commit COMMIT
 python .adlc/evidence.py close RUN_ID
 python .adlc/evidence.py validate RUN_ID
 ```
 
-The manifest records run identity, project and Git context, constitution and
-skill hashes, available harness/runtime information, stage outcomes,
-verification, human decisions, failures, interventions, and evidence references.
-Use `reference` instead of `attach` for large, binary, or externally retained CI
-artifacts.
+The feature branch must be pushed before the pull-request stage advances to CI.
+Humans remain responsible for review and merge.
 
-Use `derive` for summaries, traceability, and failure classifications. The
-command requires one or more registered raw evidence paths and stores those
-links in the manifest. Structured commands also record test/runtime results,
-unverified criteria, CI runs, pull requests, merge status, and final commits.
+## Evidence
 
-## Raw Evidence Safety
+Each V0.3 run contains a current `manifest.json`, immutable raw and derived
+artifacts, and a hash-chained append-only `events/` journal. Updates are guarded
+by a process lock and written atomically. The journal records compact changed-
+field hashes instead of copying the complete manifest on every update. Existing
+V0.2 runs retain their `raw/manifest-history/` snapshots and remain valid.
 
-`attach` accepts only UTF-8 text up to 1 MB, creates files exclusively, makes
-them read-only, hashes them, and refuses likely secret-bearing names or content.
-It never overwrites a raw artifact. Manifest updates are explicit and preserve
-the complete previous revision in `raw/manifest-history/` before replacement.
+`attach` stores UTF-8 text up to 1 MB, rejects likely secrets, writes
+exclusively, and deduplicates matching category/content evidence. Use `reference`
+for external or binary evidence. Use `identify` for a clean, committed repository
+file; it records path, commit, and content hash without copying the file.
 
-Do not collect credentials, tokens, private keys, environment files, signed URLs,
-or irrelevant personal data. Sanitize evidence before capture. External
-references must not contain credentials, query strings, or fragments.
+```bash
+python .adlc/evidence.py identify RUN_ID outputs specs/example.md
+python .adlc/evidence.py derive RUN_ID traceability report.txt \
+  --support raw/tests/test-output.txt
+```
 
-## Candidate Lessons
+Derived evidence must cite registered raw evidence. Never collect credentials,
+tokens, private keys, environment files, signed URLs, or irrelevant personal
+data.
 
-Create a proposal from registered raw evidence:
+## Retrospective
+
+`retrospect-it` operates only on closed runs. It may observe evidence and create
+candidate lessons, but it cannot change policy, skills, CI, tests, schemas, ADLC
+code, or product code. Candidates remain proposals until a separate human
+decision is appended.
 
 ```bash
 python .adlc/evidence.py lesson-create stable-lesson-id \
@@ -87,13 +116,10 @@ python .adlc/evidence.py lesson-create stable-lesson-id \
   --target deterministic-adlc-control
 ```
 
-Candidates are immutable proposals with status `proposed`. A human decision can
-be appended with `lesson-status`; it requires a registered decision-evidence
-file. Status records remain append-only and never apply the lesson automatically.
+## Portability
 
-## Reuse
-
-Copy `.adlc/` and the evidence tests into another repository. The collector uses
-only the Python standard library, discovers repository and skill metadata when
-available, and contains no product-specific fields. Adapt the repository's test
-command to run the copied tests; no application dependency is required.
+Copy `.adlc/`, the four `.codex/skills/` directories, the concise constitution
+rules in `AGENTS.md`, and the ADLC tests into another repository. Replace the
+repository-specific entries in `quality-gates.json` with that repository's
+existing deterministic gates. These entries are a local baseline, not universal
+ADLC product requirements.
