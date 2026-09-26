@@ -1,17 +1,9 @@
 [project]
-name = "adlc-bootstrap"
+name = "adlc-runtime"
 version = "0.5.0"
-description = "Bootstrap installer for the reusable ADLC"
-readme = "README.md"
+description = "Reusable ADLC runtime verification environment"
 requires-python = ">=3.12"
 dependencies = []
-
-[project.scripts]
-adlc-bootstrap = "adlc_bootstrap.cli:main"
-
-[build-system]
-requires = ["uv_build>=0.12.19,<0.13"]
-build-backend = "uv_build"
 
 [project.optional-dependencies]
 dev = [
@@ -19,6 +11,9 @@ dev = [
   "pytest>=8.3,<10",
   "ruff>=0.11,<1",
 ]
+
+[tool.uv]
+package = false
 
 [tool.pytest.ini_options]
 addopts = "-ra"

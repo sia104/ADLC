@@ -1,0 +1,38 @@
+{
+  "schema_version": "1.0",
+  "managed_paths": [
+    {
+      "source": ".adlc",
+      "destination": ".adlc",
+      "exclude": [
+        "evidence/**",
+        "install.json",
+        ".venv/**",
+        ".pytest_cache/**",
+        ".mypy_cache/**",
+        ".ruff_cache/**",
+        "**/__pycache__/**"
+      ]
+    },
+    {
+      "source": ".codex/skills",
+      "destination": ".codex/skills"
+    },
+    {
+      "source": ".github/workflows/adlc.yml",
+      "destination": ".github/workflows/adlc.yml"
+    },
+    {
+      "source": "AGENTS.md",
+      "destination": "AGENTS.md"
+    }
+  ],
+  "gitignore_entries": [
+    ".adlc/evidence/",
+    ".adlc/.venv/",
+    ".adlc/.pytest_cache/",
+    ".adlc/.mypy_cache/",
+    ".adlc/.ruff_cache/",
+    ".adlc/**/__pycache__/"
+  ]
+}

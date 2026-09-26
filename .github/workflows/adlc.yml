@@ -1,11 +1,11 @@
-name: Canonical ADLC CI
+name: ADLC
 
 on:
   push:
   pull_request:
 
 jobs:
-  quality:
+  adlc-quality:
     runs-on: ubuntu-24.04
 
     steps:
@@ -22,25 +22,18 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Sync bootstrap environment
-        run: uv sync --frozen --extra dev
-
-      - name: Test bootstrap
-        run: uv run --frozen pytest
-
-      - name: Sync ADLC runtime
+      - name: Sync ADLC environment
         run: uv sync --project .adlc --frozen --extra dev
 
-      - name: Test ADLC runtime
+      - name: Test ADLC
         run: uv run --project .adlc --frozen pytest .adlc/tests
 
-      - name: Ruff
-        run: uv run --frozen ruff check .
+      - name: Lint ADLC
+        run: uv run --project .adlc --frozen ruff check .adlc
 
-      - name: Mypy
+      - name: Type-check ADLC
         run: >
-          uv run --frozen mypy
-          src/adlc_bootstrap
+          uv run --project .adlc --frozen mypy
           .adlc/evidence.py
           .adlc/lifecycle.py
           .adlc/preflight.py

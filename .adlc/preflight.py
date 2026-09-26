@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 from adlc_config import ConfigError, load_config
 from gitops import GitOpsError, git_identity, is_project_repository
 
-EXPECTED_ADLC_VERSION = "V0.4"
+EXPECTED_ADLC_VERSION = "V0.5"
 REQUIRED_SKILLS = ("spec-it", "implement-it", "test-it", "retrospect-it")
 
 

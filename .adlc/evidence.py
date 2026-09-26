@@ -35,7 +35,7 @@ from preflight import EXPECTED_ADLC_VERSION, run_preflight
 
 SCHEMA_VERSION = "1.0"
 EVENT_SCHEMA_VERSION = "1.0"
-LIFECYCLE_VERSIONS = {"V0.3", "V0.4"}
+LIFECYCLE_VERSIONS = {"V0.3", "V0.4", "V0.5"}
 RAW_CATEGORIES = (
     "inputs",
     "outputs",
@@ -1235,7 +1235,7 @@ def publish_command(args: argparse.Namespace) -> None:
     project_root = Path.cwd().resolve()
     manifest = load_manifest(root, args.run_id)
     if manifest["adlc"]["version"] != EXPECTED_ADLC_VERSION:
-        raise EvidenceError("publication automation requires an ADLC V0.4 run")
+        raise EvidenceError("publication automation requires an ADLC V0.5 run")
     state = lifecycle_from_dict(manifest["lifecycle"])
     if state.current_stage != "independent-testing":
         raise EvidenceError("publication requires the independent-testing stage")
