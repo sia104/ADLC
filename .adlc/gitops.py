@@ -141,7 +141,15 @@ def prepare_base_branch(
     )
     if not origin:
         return
-    output(runner, project_root, "git", "fetch", "origin", config.base_branch)
+    output(
+        runner,
+        project_root,
+        "git",
+        "fetch",
+        "origin",
+        config.base_branch,
+        required=False,
+    )
     local = output(
         runner,
         project_root,

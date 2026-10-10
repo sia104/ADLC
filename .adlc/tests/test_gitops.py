@@ -265,6 +265,72 @@ def test_base_preparation_fast_forwards_and_blocks_feature_branch(
     assert (repo / "README.md").read_text(encoding="utf-8") == "remote\n"
 
 
+def test_base_preparation_allows_missing_remote_base_branch(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    command("git", "init", "-b", "master", cwd=repo)
+    configure_identity(repo)
+    (repo / ".gitignore").write_text(".adlc/evidence/\n", encoding="utf-8")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    command("git", "add", ".", cwd=repo)
+    command("git", "commit", "-m", "base", cwd=repo)
+    remote = tmp_path / "origin.git"
+    command("git", "init", "--bare", str(remote), cwd=tmp_path)
+    command("git", "remote", "add", "origin", str(remote), cwd=repo)
+
+    prepare_base_branch(repo, AdlcConfig("master", "private"))
+
+    assert command("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
+
+
+def test_base_preparation_blocks_dirty_fast_forward(tmp_path: Path) -> None:
+    remote = tmp_path / "origin.git"
+    command("git", "init", "--bare", str(remote), cwd=tmp_path)
+    repo = tmp_path / "repo"
+    command("git", "clone", str(remote), str(repo), cwd=tmp_path)
+    command("git", "switch", "-c", "master", cwd=repo)
+    configure_identity(repo)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    command("git", "add", ".", cwd=repo)
+    command("git", "commit", "-m", "base", cwd=repo)
+    command("git", "push", "-u", "origin", "master", cwd=repo)
+    other = tmp_path / "other"
+    command("git", "clone", str(remote), str(other), cwd=tmp_path)
+    configure_identity(other)
+    (other / "README.md").write_text("remote\n", encoding="utf-8")
+    command("git", "commit", "-am", "remote update", cwd=other)
+    command("git", "push", cwd=other)
+    (repo / "local.txt").write_text("dirty\n", encoding="utf-8")
+
+    with pytest.raises(GitOpsError, match="working tree must be clean"):
+        prepare_base_branch(repo, AdlcConfig("master", "private"))
+
+
+def test_base_preparation_blocks_diverged_base(tmp_path: Path) -> None:
+    remote = tmp_path / "origin.git"
+    command("git", "init", "--bare", str(remote), cwd=tmp_path)
+    repo = tmp_path / "repo"
+    command("git", "clone", str(remote), str(repo), cwd=tmp_path)
+    command("git", "switch", "-c", "master", cwd=repo)
+    configure_identity(repo)
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    command("git", "add", ".", cwd=repo)
+    command("git", "commit", "-m", "base", cwd=repo)
+    command("git", "push", "-u", "origin", "master", cwd=repo)
+    other = tmp_path / "other"
+    command("git", "clone", str(remote), str(other), cwd=tmp_path)
+    configure_identity(other)
+    (other / "README.md").write_text("remote\n", encoding="utf-8")
+    command("git", "commit", "-am", "remote update", cwd=other)
+    command("git", "push", cwd=other)
+    (repo / "local.txt").write_text("local\n", encoding="utf-8")
+    command("git", "add", "local.txt", cwd=repo)
+    command("git", "commit", "-m", "local divergent update", cwd=repo)
+
+    with pytest.raises(GitOpsError, match="diverged"):
+        prepare_base_branch(repo, AdlcConfig("master", "private"))
+
+
 def test_github_auth_failure_does_not_configure_origin(tmp_path: Path) -> None:
     calls: list[tuple[str, ...]] = []
 

@@ -9,6 +9,7 @@ CI/build reproducibility is a workflow requirement where practical; prefer locke
 follow the approved-specification, feature-branch, implementation, independent-testing, push, pull-request, CI, human-review, human-merge workflow
 do not begin implementation on the protected or base branch
 existing deterministic quality gates must not be weakened, removed, bypassed, or made less strict without explicit human approval
+deterministic quality-gate results must come from executed deterministic checks, not unverified agent assertions
 critical development gates must state whether they are procedural/human-controlled or technically enforced
 CI must pass before merge; this is currently a procedural human gate
 humans control merge; this is currently a procedural human gate

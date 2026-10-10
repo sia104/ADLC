@@ -319,6 +319,14 @@ def required_gate_names(root: Path) -> set[str]:
     return {gate["name"] for gate in quality_gate_definitions(root)}
 
 
+def required_gate_identifiers(root: Path) -> set[str]:
+    return {
+        value
+        for gate in quality_gate_definitions(root)
+        for value in (gate["name"], gate["command"])
+    }
+
+
 def git_head(project_root: Path) -> str | None:
     return run_command("git", "rev-parse", "HEAD", cwd=project_root)
 
@@ -1147,6 +1155,26 @@ def record_gate_artifact(
     }
 
 
+def candidate_lessons_for_run(root: Path, run_id: str) -> list[str]:
+    lessons_root = root / "evidence" / "lessons"
+    if not lessons_root.is_dir():
+        return []
+    lesson_ids: list[str] = []
+    for candidate_path in sorted(lessons_root.glob("*/candidate.json")):
+        candidate = load_json(candidate_path)
+        support = require_list(
+            candidate.get("supporting_evidence"), "candidate.supporting_evidence"
+        )
+        if any(
+            isinstance(item, dict) and item.get("run_id") == run_id
+            for item in support
+        ):
+            lesson_id = candidate.get("lesson_id")
+            if isinstance(lesson_id, str):
+                lesson_ids.append(lesson_id)
+    return lesson_ids
+
+
 LIFECYCLE_STAGE_RECORDS = {
     "specification": "spec-it",
     "human-specification-approval": "specification-approval",
@@ -1269,9 +1297,13 @@ def transition_command(args: argparse.Namespace) -> None:
                 "recorded_at": utc_now(),
             }
         if args.target == "retrospective":
+            lesson_ids = candidate_lessons_for_run(root, args.run_id)
             manifest["retrospective"] = {
                 "status": "complete",
                 "required_action": None,
+                "candidate_lessons_proposed": bool(lesson_ids),
+                "candidate_lesson_count": len(lesson_ids),
+                "candidate_lessons": lesson_ids,
                 "recorded_at": utc_now(),
             }
 
@@ -1319,7 +1351,7 @@ def specification_command(args: argparse.Namespace) -> None:
 
 def gate_command(args: argparse.Namespace) -> None:
     root = Path(args.root).resolve()
-    if args.status == "pass" and args.name in required_gate_names(root):
+    if args.status == "pass" and args.name in required_gate_identifiers(root):
         raise EvidenceError(
             "required deterministic gates cannot be manually recorded as pass"
         )
