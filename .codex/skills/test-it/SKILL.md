@@ -11,9 +11,12 @@ Trust level: OBSERVE / REPORT ONLY.
 
 Rules:
 - Read the approved specification and acceptance criteria, then inspect the implementation and existing tests.
-- Map each acceptance criterion to deterministic verification and identify criteria that are inadequately tested or remain unverified.
+- Map every mandatory requirement in the approved specification, not only acceptance criteria, to verification evidence and status.
+- Persist a derived traceability artifact through `.adlc/evidence.py derive` covering each mandatory requirement, its related acceptance criterion or direct verification, evidence, and status.
+- Use at least `verified`, `failed`, and `unverified` statuses; passing acceptance criteria do not make an unmapped mandatory requirement verified.
 - At this trust level, propose appropriate missing automated tests; add tests only when a human separately authorizes file changes.
 - Run the repository-defined test and quality gates.
+- Required deterministic quality gates must be executed by ADLC tooling, not recorded as passed from agent judgment.
 - When an ADLC evidence run is active, record traceability, test results, gaps, and runtime findings through the shared `.adlc` mechanism. This evidence write does not authorize product or test changes.
 - Report passes, failures, gaps, and unverified criteria clearly.
 - Do not change product requirements, repair production or application code, or merge changes.

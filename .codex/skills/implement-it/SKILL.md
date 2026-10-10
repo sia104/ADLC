@@ -16,7 +16,7 @@ Rules:
 - For user-runnable software, create or update concise documentation covering setup or installation, launch, user access or use, and verification commands.
 - Add or update deterministic tests for implemented behavior.
 - When an ADLC evidence run is active, contribute specification references, changed-file or diff references, outcomes, and documentation changes through the shared `.adlc` mechanism; do not write a separate large evidence report.
-- Run the repository-defined deterministic quality gates before completion.
+- Run required deterministic quality gates through ADLC tooling before completion. Do not record a required gate as passed from agent judgment; pass/fail must come from actual deterministic execution against the recorded repository state.
 - Perform implementation and normal implementation checks, not independent adversarial verification.
 - In a remediation iteration, implement only the correction approved by the human after `test-it` reported the gap, and keep the iteration in the same run.
 - Do not merge; humans control merge.

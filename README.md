@@ -2,7 +2,7 @@
 
 Canonical reusable **AI-assisted Application Development Life Cycle (ADLC)**.
 
-Current version: **V0.5**
+Current version: **V0.6**
 
 Repository: `https://github.com/sia104/ADLC`
 
@@ -30,6 +30,7 @@ The current development history is:
 * **V0.3** — added deterministic lifecycle orchestration, repository preflight, evidence improvements, Git workflow governance, and `retrospect-it`.
 * **V0.4** — automated Git/GitHub bootstrap, feature-branch publication, pull-request creation, and public-repository safety checks.
 * **V0.5** — added versioned ADLC bootstrap distribution so the reusable ADLC can be installed into projects without manually copying files.
+* **V0.6** — hardened deterministic quality gates, run provenance, evidence locality, traceability, retrospective workflow, PR title intent, and base-branch preparation.
 
 ---
 
@@ -187,7 +188,7 @@ Human review and merge remain human-controlled gates.
 
 # Bootstrap a new project
 
-V0.5 introduces the `adlc-bootstrap` command.
+The `adlc-bootstrap` command installs the versioned reusable ADLC.
 
 This removes the need to manually copy `.adlc`, `.codex`, `.github`, and `AGENTS.md` into every new project.
 
@@ -207,10 +208,10 @@ For full GitHub automation during an ADLC run, also install and authenticate:
 
 ## Create a new project
 
-Install ADLC V0.5 into a new directory:
+Install ADLC V0.6 into a new directory:
 
 ```bash
-uvx --from git+https://github.com/sia104/ADLC@v0.5.0 \
+uvx --from git+https://github.com/sia104/ADLC@v0.6.0 \
   adlc-bootstrap init my-project
 ```
 
@@ -257,7 +258,7 @@ my-project/
 From the existing project's root:
 
 ```bash
-uvx --from git+https://github.com/sia104/ADLC@v0.5.0 \
+uvx --from git+https://github.com/sia104/ADLC@v0.6.0 \
   adlc-bootstrap init .
 ```
 
@@ -297,13 +298,13 @@ The canonical ADLC version is stored in:
 For this release:
 
 ```text
-V0.5
+V0.6
 ```
 
 The corresponding Git release/tag is:
 
 ```text
-v0.5.0
+v0.6.0
 ```
 
 Projects should normally bootstrap from an immutable release tag rather than from `master`.
@@ -624,7 +625,7 @@ Do not introduce an AI agent when deterministic software, a reusable skill, or a
 
 # Current limitations
 
-V0.5 intentionally does not provide:
+V0.6 intentionally does not provide:
 
 * automatic ADLC upgrades;
 * automatic conflict merging;
@@ -648,7 +649,7 @@ The information recorded in `.adlc/install.json` is intended to support a future
 Canonical releases should use Git tags such as:
 
 ```text
-v0.5.0
+v0.6.0
 v0.6.0
 v0.7.0
 ```
@@ -658,7 +659,7 @@ Consuming projects should normally install a tagged release rather than the curr
 Example:
 
 ```bash
-uvx --from git+https://github.com/sia104/ADLC@v0.5.0 \
+uvx --from git+https://github.com/sia104/ADLC@v0.6.0 \
   adlc-bootstrap init my-project
 ```
 

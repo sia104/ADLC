@@ -11,6 +11,7 @@ import os
 import platform
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -35,7 +36,7 @@ from preflight import EXPECTED_ADLC_VERSION, run_preflight
 
 SCHEMA_VERSION = "1.0"
 EVENT_SCHEMA_VERSION = "1.0"
-LIFECYCLE_VERSIONS = {"V0.3", "V0.4", "V0.5"}
+LIFECYCLE_VERSIONS = {"V0.3", "V0.4", "V0.5", "V0.6"}
 RAW_CATEGORIES = (
     "inputs",
     "outputs",
@@ -150,6 +151,33 @@ def command_succeeds(*command: str, cwd: Path) -> bool:
     return True
 
 
+def command_result(
+    command: Sequence[str], cwd: Path, timeout: int = 600
+) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(
+            list(command), 127, "", f"required command is unavailable: {command[0]}"
+        )
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout if isinstance(error.stdout, str) else ""
+        stderr = error.stderr if isinstance(error.stderr, str) else ""
+        return subprocess.CompletedProcess(
+            list(command),
+            124,
+            stdout,
+            stderr or f"command timed out after {timeout} seconds",
+        )
+
+
 def validate_identifier(value: str, label: str) -> None:
     if not IDENTIFIER.fullmatch(value):
         raise EvidenceError(f"invalid {label}: {value!r}")
@@ -257,6 +285,79 @@ def canonical_adlc_version(root: Path) -> str:
     if not version:
         raise EvidenceError("canonical ADLC version is empty")
     return version
+
+
+def quality_gate_definitions(root: Path) -> list[dict[str, Any]]:
+    data = load_json(root / "quality-gates.json")
+    gates: list[dict[str, Any]] = []
+    for index, item in enumerate(data.get("required_gates", []), start=1):
+        gate = require_mapping(item, f"required_gates[{index}]")
+        command = gate.get("command")
+        if not isinstance(command, str) or not command:
+            raise EvidenceError("required gate command must be a non-empty string")
+        mode = gate.get("execution_mode", "argv")
+        if mode not in {"argv", "shell"}:
+            raise EvidenceError("quality gate execution_mode must be argv or shell")
+        gates.append(
+            {
+                "name": str(gate.get("name") or command),
+                "command": command,
+                "execution_mode": mode,
+            }
+        )
+    for command in data.get("required_commands", []):
+        if not isinstance(command, str) or not command:
+            raise EvidenceError("required command must be a non-empty string")
+        if not any(gate["command"] == command for gate in gates):
+            gates.append(
+                {"name": command, "command": command, "execution_mode": "argv"}
+            )
+    return gates
+
+
+def required_gate_names(root: Path) -> set[str]:
+    return {gate["name"] for gate in quality_gate_definitions(root)}
+
+
+def git_head(project_root: Path) -> str | None:
+    return run_command("git", "rev-parse", "HEAD", cwd=project_root)
+
+
+def working_tree_fingerprint(project_root: Path) -> str:
+    digest = hashlib.sha256()
+    for command in (
+        ("git", "status", "--porcelain=v1", "-z"),
+        ("git", "diff", "--binary", "HEAD", "--"),
+        ("git", "diff", "--cached", "--binary", "HEAD", "--"),
+    ):
+        result = command_result(command, project_root, timeout=60)
+        digest.update(b"\0".join(part.encode("utf-8") for part in command))
+        digest.update(str(result.returncode).encode("ascii"))
+        digest.update(result.stdout.encode("utf-8", "surrogateescape"))
+        digest.update(result.stderr.encode("utf-8", "surrogateescape"))
+    untracked = command_result(
+        ("git", "ls-files", "--others", "--exclude-standard", "-z"),
+        project_root,
+        timeout=60,
+    )
+    for name in sorted(filter(None, untracked.stdout.split("\0"))):
+        path = project_root / name
+        if path.is_file():
+            digest.update(name.encode("utf-8", "surrogateescape"))
+            digest.update(sha256_file(path).encode("ascii"))
+    return digest.hexdigest()
+
+
+def repository_state(project_root: Path) -> dict[str, Any]:
+    return {
+        "head": git_head(project_root),
+        "branch": run_command("git", "branch", "--show-current", cwd=project_root),
+        "working_tree_status": run_command(
+            "git", "status", "--porcelain", cwd=project_root
+        )
+        or "",
+        "working_tree_fingerprint": working_tree_fingerprint(project_root),
+    }
 
 
 def changed_fields(
@@ -377,6 +478,11 @@ def validate_manifest(manifest: dict[str, Any], expected_run_id: str) -> None:
     require_list(adlc.get("skills"), "adlc.skills")
     require_mapping(manifest["context"], "context")
     git_context = require_mapping(manifest["git"], "git")
+    context = require_mapping(manifest["context"], "context")
+    if adlc["version"] == EXPECTED_ADLC_VERSION:
+        original_request = context.get("original_request")
+        if not isinstance(original_request, str) or not original_request:
+            raise EvidenceError("V0.6 runs require context.original_request")
 
     if adlc["version"] in LIFECYCLE_VERSIONS:
         try:
@@ -574,6 +680,14 @@ def create_run(args: argparse.Namespace) -> None:
     validate_identifier(run_id, "run ID")
     for label in ("project", "harness", "model"):
         reject_sensitive_text(getattr(args, label), label)
+    request_content: bytes | None = None
+    if adlc_version == EXPECTED_ADLC_VERSION and not args.request_file:
+        raise EvidenceError("V0.6 runs require a non-empty initiating request artifact")
+    if args.request_file:
+        request_source = Path(args.request_file).resolve()
+        request_content = safe_attachment(request_source, "original-request.txt")
+        if not request_content.strip():
+            raise EvidenceError("initiating request artifact must be non-empty")
     directory = run_directory(root, run_id)
     if directory.exists():
         raise EvidenceError(f"run already exists: {run_id}")
@@ -598,11 +712,9 @@ def create_run(args: argparse.Namespace) -> None:
     }
     artifacts: list[dict[str, Any]] = [preflight_artifact]
     original_request: str | None = None
-    if args.request_file:
-        request_source = Path(args.request_file).resolve()
-        content = safe_attachment(request_source, "original-request.txt")
+    if request_content is not None:
         request_path = directory / "raw" / "inputs" / "original-request.txt"
-        request_path.write_bytes(content)
+        request_path.write_bytes(request_content)
         request_path.chmod(0o444)
         original_request = "raw/inputs/original-request.txt"
         artifacts.append(
@@ -610,8 +722,8 @@ def create_run(args: argparse.Namespace) -> None:
                 "type": "file",
                 "category": "inputs",
                 "path": original_request,
-                "sha256": sha256_bytes(content),
-                "size": len(content),
+                "sha256": sha256_bytes(request_content),
+                "size": len(request_content),
                 "created_at": utc_now(),
             }
         )
@@ -677,6 +789,7 @@ def create_run(args: argparse.Namespace) -> None:
             },
             "preflight_evidence": preflight_artifact["path"],
         },
+        "retrospective": {"status": "not_due", "required_action": None},
         "verification": {
             "tests": [],
             "ci": {"status": "not_run", "workflow_run": None, "evidence": []},
@@ -940,6 +1053,100 @@ def ensure_evidence_refs(manifest: dict[str, Any], references: list[str]) -> Non
         raise EvidenceError(f"unknown evidence reference: {', '.join(unknown)}")
 
 
+def ensure_evidence_local(project_root: Path) -> None:
+    if not command_succeeds(
+        "git", "check-ignore", ".adlc/evidence/example.json", cwd=project_root
+    ):
+        raise EvidenceError(".adlc/evidence/ must be ignored by Git")
+    tracked = run_command("git", "ls-files", ".adlc/evidence", cwd=project_root)
+    if tracked:
+        raise EvidenceError(".adlc/evidence/ contains tracked files")
+
+
+def gate_matches(record: dict[str, Any], gate: dict[str, Any]) -> bool:
+    return bool(
+        record.get("name") == gate["name"]
+        and record.get("command") == gate["command"]
+    )
+
+
+def gate_is_fresh(record: dict[str, Any], state: dict[str, Any]) -> bool:
+    return bool(
+        record.get("head") == state["head"]
+        and record.get("working_tree_fingerprint")
+        == state["working_tree_fingerprint"]
+    )
+
+
+def ensure_required_gates_current(
+    manifest: dict[str, Any], root: Path, project_root: Path
+) -> None:
+    state = repository_state(project_root)
+    for gate in quality_gate_definitions(root):
+        matching = [
+            item
+            for item in manifest["verification"]["quality_gates"]
+            if gate_matches(item, gate)
+        ]
+        if not matching:
+            raise EvidenceError(f"required quality gate has not run: {gate['name']}")
+        record = matching[-1]
+        if record.get("source") != "deterministic-execution":
+            raise EvidenceError(f"required quality gate is not deterministic: {gate['name']}")
+        if record.get("status") != "pass":
+            raise EvidenceError(f"required quality gate did not pass: {gate['name']}")
+        if not gate_is_fresh(record, state):
+            raise EvidenceError(f"required quality gate is stale: {gate['name']}")
+
+
+def selected_pr_title(
+    manifest: dict[str, Any], root: Path, project_root: Path
+) -> str | None:
+    run_dir = run_directory(root, manifest["run_id"])
+    approved = manifest["context"].get("approved_specification")
+    if isinstance(approved, str):
+        for artifact in manifest["artifacts"]:
+            if artifact.get("path") == approved and artifact["type"] == "file":
+                spec_path = run_dir / approved
+                if spec_path.is_file():
+                    for line in spec_path.read_text(encoding="utf-8").splitlines():
+                        stripped = line.strip()
+                        if stripped.startswith("# "):
+                            return stripped.removeprefix("# ").strip()[:120]
+    original = manifest["context"].get("original_request")
+    if isinstance(original, str):
+        request_path = run_dir / original
+        if request_path.is_file():
+            summary = request_path.read_text(encoding="utf-8").strip().splitlines()[0]
+            if summary:
+                return summary[:120]
+    branch = run_command("git", "branch", "--show-current", cwd=project_root)
+    if branch and branch not in {manifest["git"].get("base_branch")}:
+        return branch.replace("/", " ")[:120]
+    return None
+
+
+def record_gate_artifact(
+    root: Path, run_id: str, gate_name: str, record: dict[str, Any]
+) -> dict[str, Any]:
+    safe_name = re.sub(r"[^A-Za-z0-9._-]+", "-", gate_name).strip("-") or "gate"
+    destination = (
+        run_directory(root, run_id)
+        / "raw"
+        / "tests"
+        / f"quality-gate-{safe_name}-{secrets.token_hex(4)}.json"
+    )
+    write_json_new(destination, record, readonly=True)
+    return {
+        "type": "file",
+        "category": "tests",
+        "path": destination.relative_to(run_directory(root, run_id)).as_posix(),
+        "sha256": sha256_file(destination),
+        "size": destination.stat().st_size,
+        "created_at": utc_now(),
+    }
+
+
 LIFECYCLE_STAGE_RECORDS = {
     "specification": "spec-it",
     "human-specification-approval": "specification-approval",
@@ -969,6 +1176,7 @@ def enforce_transition(
     current: str,
     target: str,
     outcome: str,
+    root: Path,
     project_root: Path,
 ) -> None:
     if current == "independent-testing" and target == "remediation":
@@ -995,6 +1203,13 @@ def enforce_transition(
         ):
             raise EvidenceError("remediation requires an approved human decision")
         manifest["git"]["branch"] = branch
+    if (
+        current == "implementation"
+        and target == "independent-testing"
+        and manifest["adlc"]["version"] == EXPECTED_ADLC_VERSION
+    ):
+        ensure_evidence_local(project_root)
+        ensure_required_gates_current(manifest, root, project_root)
     if (
         current == "independent-testing"
         and target == "pull-request"
@@ -1033,6 +1248,7 @@ def transition_command(args: argparse.Namespace) -> None:
                 state.current_stage,
                 args.target,
                 args.outcome,
+                root,
                 project_root,
             )
         except LifecycleError as error:
@@ -1047,6 +1263,17 @@ def transition_command(args: argparse.Namespace) -> None:
         manifest["lifecycle"] = next_state.as_dict()
         if args.target == "run-closure":
             manifest["ended_at"] = utc_now()
+            manifest["retrospective"] = {
+                "status": "pending",
+                "required_action": "invoke retrospect-it",
+                "recorded_at": utc_now(),
+            }
+        if args.target == "retrospective":
+            manifest["retrospective"] = {
+                "status": "complete",
+                "required_action": None,
+                "recorded_at": utc_now(),
+            }
 
     update_manifest(root, args.run_id, transition, event_type="lifecycle.transitioned")
 
@@ -1092,6 +1319,10 @@ def specification_command(args: argparse.Namespace) -> None:
 
 def gate_command(args: argparse.Namespace) -> None:
     root = Path(args.root).resolve()
+    if args.status == "pass" and args.name in required_gate_names(root):
+        raise EvidenceError(
+            "required deterministic gates cannot be manually recorded as pass"
+        )
 
     def record(manifest: dict[str, Any]) -> None:
         ensure_evidence_refs(manifest, args.evidence)
@@ -1099,12 +1330,81 @@ def gate_command(args: argparse.Namespace) -> None:
             {
                 "name": args.name,
                 "status": args.status,
+                "source": "manual",
                 "evidence": args.evidence,
                 "recorded_at": utc_now(),
             }
         )
 
     update_manifest(root, args.run_id, record, event_type="quality-gate.recorded")
+
+
+def gate_run_command(args: argparse.Namespace) -> None:
+    root = Path(args.root).resolve()
+    project_root = Path.cwd().resolve()
+    gates = quality_gate_definitions(root)
+    matching = [
+        gate
+        for gate in gates
+        if gate["name"] == args.name or gate["command"] == args.name
+    ]
+    if not matching:
+        raise EvidenceError(f"unknown required deterministic gate: {args.name}")
+    gate = matching[0]
+    before_state = repository_state(project_root)
+    started_at = utc_now()
+    if gate["execution_mode"] == "shell":
+        result = command_result(["/bin/sh", "-c", gate["command"]], project_root)
+    else:
+        result = command_result(shlex.split(gate["command"]), project_root)
+    ended_at = utc_now()
+    after_state = repository_state(project_root)
+    status = "pass" if result.returncode == 0 else "fail"
+    execution_record = {
+        "schema_version": SCHEMA_VERSION,
+        "name": gate["name"],
+        "command": gate["command"],
+        "execution_mode": gate["execution_mode"],
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "exit_code": result.returncode,
+        "status": status,
+        "stdout": result.stdout,
+        "stderr": result.stderr,
+        "head": before_state["head"],
+        "branch": before_state["branch"],
+        "working_tree_status": before_state["working_tree_status"],
+        "working_tree_fingerprint": before_state["working_tree_fingerprint"],
+        "post_execution_head": after_state["head"],
+        "post_execution_working_tree_fingerprint": after_state[
+            "working_tree_fingerprint"
+        ],
+    }
+    artifact = record_gate_artifact(root, args.run_id, gate["name"], execution_record)
+
+    def record(manifest: dict[str, Any]) -> None:
+        manifest["artifacts"].append(artifact)
+        manifest["verification"]["quality_gates"].append(
+            {
+                "name": gate["name"],
+                "command": gate["command"],
+                "execution_mode": gate["execution_mode"],
+                "source": "deterministic-execution",
+                "status": status,
+                "exit_code": result.returncode,
+                "head": before_state["head"],
+                "branch": before_state["branch"],
+                "working_tree_status": before_state["working_tree_status"],
+                "working_tree_fingerprint": before_state[
+                    "working_tree_fingerprint"
+                ],
+                "evidence": [artifact["path"]],
+                "recorded_at": ended_at,
+            }
+        )
+
+    update_manifest(root, args.run_id, record, event_type="quality-gate.executed")
+    print(json.dumps({"name": gate["name"], "status": status}, sort_keys=True))
 
 
 def verification_command(args: argparse.Namespace) -> None:
@@ -1213,7 +1513,12 @@ def close_command(args: argparse.Namespace) -> None:
             try:
                 state = lifecycle_from_dict(manifest["lifecycle"])
                 enforce_transition(
-                    manifest, state.current_stage, "run-closure", "pass", Path.cwd()
+                    manifest,
+                    state.current_stage,
+                    "run-closure",
+                    "pass",
+                    root,
+                    Path.cwd(),
                 )
                 manifest["lifecycle"] = advance_lifecycle(
                     state, "run-closure"
@@ -1226,6 +1531,11 @@ def close_command(args: argparse.Namespace) -> None:
             except LifecycleError as error:
                 raise EvidenceError(str(error)) from error
         manifest["ended_at"] = utc_now()
+        manifest["retrospective"] = {
+            "status": "pending",
+            "required_action": "invoke retrospect-it",
+            "recorded_at": utc_now(),
+        }
 
     update_manifest(root, args.run_id, close, event_type="run.closed")
 
@@ -1235,12 +1545,28 @@ def publish_command(args: argparse.Namespace) -> None:
     project_root = Path.cwd().resolve()
     manifest = load_manifest(root, args.run_id)
     if manifest["adlc"]["version"] != EXPECTED_ADLC_VERSION:
-        raise EvidenceError("publication automation requires an ADLC V0.5 run")
+        raise EvidenceError("publication automation requires an ADLC V0.6 run")
     state = lifecycle_from_dict(manifest["lifecycle"])
     if state.current_stage != "independent-testing":
         raise EvidenceError("publication requires the independent-testing stage")
     if manifest["stages"]["test-it"]["status"] != "pass":
         raise EvidenceError("publication requires passing independent testing")
+    try:
+        ensure_evidence_local(project_root)
+        ensure_required_gates_current(manifest, root, project_root)
+    except EvidenceError as error:
+        error_message = str(error)
+
+        def record_blocker(value: dict[str, Any]) -> None:
+            value["git"]["publication_blocker"] = {
+                "message": error_message,
+                "recorded_at": utc_now(),
+            }
+
+        update_manifest(
+            root, args.run_id, record_blocker, event_type="publication.blocked"
+        )
+        raise
     passed_checks = [
         item["name"]
         for field in ("tests", "quality_gates", "runtime_e2e")
@@ -1274,6 +1600,7 @@ def publish_command(args: argparse.Namespace) -> None:
             project_root,
             config,
             verification_summary=verification_summary,
+            pr_title=selected_pr_title(manifest, root, project_root),
             on_pushed=record_pushed,
         )
     except (ConfigError, GitOpsError) as error:
@@ -1573,6 +1900,13 @@ def build_parser() -> argparse.ArgumentParser:
     gate.add_argument("status", choices=("pass", "fail", "incomplete"))
     gate.add_argument("--evidence", action="append", default=[])
     gate.set_defaults(handler=gate_command)
+
+    gate_run = subparsers.add_parser(
+        "gate-run", help="execute and record a required deterministic quality gate"
+    )
+    gate_run.add_argument("run_id")
+    gate_run.add_argument("name")
+    gate_run.set_defaults(handler=gate_run_command)
 
     verification = subparsers.add_parser(
         "verification", help="record a test or runtime result"

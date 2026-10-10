@@ -9,6 +9,8 @@ Use this skill to convert a user request into a precise, testable specification.
 
 Rules:
 - Do not write implementation code.
+- Before creating or saving a specification, confirm an active ADLC evidence run exists and its manifest has a non-empty `context.original_request` artifact.
+- If the run or initiating request is missing, stop and ask for the ADLC run to be created before specification work is saved.
 - Capture the minimally sufficient product behavior, constraints, acceptance criteria, and product-specific test expectations.
 - Before making a product requirement mandatory, identify its provenance: it must be directly requested, necessary to remove ambiguity or make acceptance objectively testable, or an explicit human-approved design choice.
 - Put reasonable additions without one of those provenances under Optional Recommendations instead of making them mandatory.
@@ -18,6 +20,7 @@ Rules:
 - If user intent does not determine such a choice, ask the human where necessary or mark it unresolved and requiring approval.
 - Do not let the implementer silently choose behavior that changes expected outputs. Give acceptance criteria an unambiguous expected outcome wherever practical.
 - Save specifications under `specs/`.
-- When an ADLC evidence run is active, contribute the request, specification, status, and approval references through the shared `.adlc` mechanism; do not write a separate large evidence report.
+- Reference the active evidence run in the saved specification.
+- Contribute the request, specification, status, and approval references through the shared `.adlc` mechanism; do not write a separate large evidence report.
 - Mark the specification as pending human approval until the human approves it.
 - Do not proceed to implementation from this skill.

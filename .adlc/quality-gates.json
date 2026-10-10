@@ -7,6 +7,28 @@
     "uv run --project .adlc --frozen ruff check .adlc",
     "uv run --project .adlc --frozen mypy .adlc/evidence.py .adlc/lifecycle.py .adlc/preflight.py .adlc/adlc_config.py .adlc/gitops.py"
   ],
+  "required_gates": [
+    {
+      "name": "sync-adlc-runtime",
+      "command": "uv sync --project .adlc --frozen --extra dev",
+      "execution_mode": "argv"
+    },
+    {
+      "name": "test-adlc-runtime",
+      "command": "uv run --project .adlc --frozen pytest .adlc/tests",
+      "execution_mode": "argv"
+    },
+    {
+      "name": "lint-adlc-runtime",
+      "command": "uv run --project .adlc --frozen ruff check .adlc",
+      "execution_mode": "argv"
+    },
+    {
+      "name": "typecheck-adlc-runtime",
+      "command": "uv run --project .adlc --frozen mypy .adlc/evidence.py .adlc/lifecycle.py .adlc/preflight.py .adlc/adlc_config.py .adlc/gitops.py",
+      "execution_mode": "argv"
+    }
+  ],
   "required_fragments": {
     ".adlc/pyproject.toml": [
       "select = [\"E4\", \"E7\", \"E9\", \"F\", \"I\", \"UP\", \"B\"]",

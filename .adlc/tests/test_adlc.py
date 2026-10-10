@@ -76,6 +76,34 @@ def create_run(repo: Path, tmp_path: Path, run_id: str = "test-run") -> str:
     return result.stdout.strip()
 
 
+def install_fast_quality_gate(repo: Path) -> None:
+    (repo / ".adlc" / "quality-gates.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "workflow": ".github/workflows/adlc.yml",
+                "required_commands": ["git status --short"],
+                "required_gates": [
+                    {
+                        "name": "fast-git-status",
+                        "command": "git status --short",
+                        "execution_mode": "argv",
+                    }
+                ],
+                "required_fragments": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    command("git", "add", ".adlc/quality-gates.json", cwd=repo)
+    command("git", "commit", "-m", "Use fast quality gate", cwd=repo)
+
+
+def run_fast_quality_gate(repo: Path, run_id: str) -> None:
+    result = adlc(repo, "gate-run", run_id, "fast-git-status")
+    assert json.loads(result.stdout)["status"] == "pass"
+
+
 def manifest(repo: Path, run_id: str) -> dict[str, object]:
     path = repo / ".adlc" / "evidence" / "runs" / run_id / "manifest.json"
     return json.loads(path.read_text(encoding="utf-8"))
@@ -121,7 +149,7 @@ def test_create_uses_canonical_version_preflight_and_event_journal(
     value = manifest(repo, run_id)
     run_dir = repo / ".adlc" / "evidence" / "runs" / run_id
 
-    assert value["adlc"]["version"] == "V0.5"  # type: ignore[index]
+    assert value["adlc"]["version"] == "V0.6"  # type: ignore[index]
     assert value["lifecycle"]["current_stage"] == "specification"  # type: ignore[index]
     assert value["governance"]["controls"]["human_merge"] == {  # type: ignore[index]
         "enforcement": "procedural"
@@ -140,6 +168,21 @@ def test_create_uses_canonical_version_preflight_and_event_journal(
     assert (run_dir / "events" / "event-0001.json").is_file()
     assert not (run_dir / "raw" / "manifest-history").exists()
     assert adlc(repo, "validate", run_id).returncode == 0
+
+
+def test_create_requires_original_request_artifact(tmp_path: Path) -> None:
+    repo, _ = make_repository(tmp_path)
+    result = adlc(
+        repo,
+        "create",
+        "--run-id",
+        "missing-request",
+        "--base-branch",
+        "master",
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "initiating request" in result.stderr
 
 
 def test_attachment_deduplication_avoids_redundant_copy(tmp_path: Path) -> None:
@@ -250,6 +293,8 @@ def test_controller_blocks_invalid_transition_and_supports_remediation(
     command("git", "checkout", "-b", "feature/example", cwd=repo)
     adlc(repo, "transition", run_id, "feature-branch", "pass")
     adlc(repo, "transition", run_id, "implementation", "pass")
+    install_fast_quality_gate(repo)
+    run_fast_quality_gate(repo, run_id)
     adlc(repo, "transition", run_id, "independent-testing", "pass")
     adlc(repo, "transition", run_id, "remediation", "fail")
 
@@ -257,6 +302,7 @@ def test_controller_blocks_invalid_transition_and_supports_remediation(
     assert blocked.returncode == 2
     assert "approved human decision" in blocked.stderr
     adlc(repo, "decision", run_id, "implementation", "approved")
+    run_fast_quality_gate(repo, run_id)
     adlc(repo, "transition", run_id, "implementation", "pass")
     assert manifest(repo, run_id)["lifecycle"]["current_stage"] == "implementation"  # type: ignore[index]
 
@@ -300,6 +346,8 @@ def test_closed_run_can_enter_retrospective_and_propose_only(
     command("git", "checkout", "-b", "feature/complete", cwd=repo)
     adlc(repo, "transition", run_id, "feature-branch", "pass")
     adlc(repo, "transition", run_id, "implementation", "pass")
+    install_fast_quality_gate(repo)
+    run_fast_quality_gate(repo, run_id)
     adlc(repo, "transition", run_id, "independent-testing", "pass")
     premature = adlc(
         repo, "transition", run_id, "pull-request", "pass", check=False
@@ -315,6 +363,7 @@ def test_closed_run_can_enter_retrospective_and_propose_only(
     )
     command("git", "add", ".adlc/config.json", cwd=repo)
     command("git", "commit", "-m", "Use private test publication", cwd=repo)
+    run_fast_quality_gate(repo, run_id)
     install_fake_gh(tmp_path, monkeypatch, tmp_path / "unused.git")
     publication = adlc(repo, "publish", run_id, check=False)
     assert publication.returncode == 0, publication.stderr
@@ -369,6 +418,83 @@ def test_closed_run_can_enter_retrospective_and_propose_only(
     assert manifest(repo, run_id)["lifecycle"]["open"] is False  # type: ignore[index]
 
 
+def test_required_gate_execution_and_freshness_are_enforced(tmp_path: Path) -> None:
+    repo, _ = make_repository(tmp_path)
+    run_id = create_run(repo, tmp_path)
+    command("git", "checkout", "-b", "feature/gates", cwd=repo)
+    install_fast_quality_gate(repo)
+
+    manual = adlc(
+        repo,
+        "gate",
+        run_id,
+        "fast-git-status",
+        "pass",
+        check=False,
+    )
+    assert manual.returncode == 2
+    assert "cannot be manually recorded" in manual.stderr
+
+    run_fast_quality_gate(repo, run_id)
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Approved specification\n", encoding="utf-8")
+    spec_ref = adlc(repo, "attach", run_id, "outputs", str(spec)).stdout.strip()
+    adlc(
+        repo,
+        "transition",
+        run_id,
+        "human-specification-approval",
+        "pass",
+        "--evidence",
+        spec_ref,
+    )
+    adlc(repo, "specification", run_id, spec_ref)
+    adlc(repo, "decision", run_id, "specification", "approved")
+    adlc(repo, "transition", run_id, "feature-branch", "pass")
+    adlc(repo, "transition", run_id, "implementation", "pass")
+    (repo / "README.md").write_text("changed\n", encoding="utf-8")
+    command("git", "add", "README.md", cwd=repo)
+    command("git", "commit", "-m", "Change head", cwd=repo)
+    blocked = adlc(
+        repo, "transition", run_id, "independent-testing", "pass", check=False
+    )
+    assert blocked.returncode == 2
+    assert "stale" in blocked.stderr
+    run_fast_quality_gate(repo, run_id)
+    adlc(repo, "transition", run_id, "independent-testing", "pass")
+
+
+def test_failing_required_gate_records_fail_not_pass(tmp_path: Path) -> None:
+    repo, _ = make_repository(tmp_path)
+    run_id = create_run(repo, tmp_path)
+    (repo / ".adlc" / "quality-gates.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "workflow": ".github/workflows/adlc.yml",
+                "required_commands": ["git rev-parse --verify missing-ref"],
+                "required_gates": [
+                    {
+                        "name": "failing-gate",
+                        "command": "git rev-parse --verify missing-ref",
+                        "execution_mode": "argv",
+                    }
+                ],
+                "required_fragments": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    command("git", "add", ".adlc/quality-gates.json", cwd=repo)
+    command("git", "commit", "-m", "Use failing quality gate", cwd=repo)
+
+    result = adlc(repo, "gate-run", run_id, "failing-gate")
+    assert json.loads(result.stdout)["status"] == "fail"
+    gates = manifest(repo, run_id)["verification"]["quality_gates"]  # type: ignore[index]
+    assert gates[-1]["status"] == "fail"
+    assert gates[-1]["exit_code"] != 0
+
+
 def test_preflight_flags_quality_gate_weakening_for_human_approval(
     tmp_path: Path,
 ) -> None:
@@ -397,16 +523,36 @@ def test_preflight_flags_quality_gate_weakening_for_human_approval(
     assert issue["requires_human_approval"] is True
 
 
+def test_preflight_accepts_folded_multiline_required_command(tmp_path: Path) -> None:
+    repo, _ = make_repository(tmp_path)
+    result = command(
+        sys.executable,
+        ".adlc/preflight.py",
+        "--base-branch",
+        "master",
+        cwd=repo,
+    )
+    report = json.loads(result.stdout)
+    assert "quality-gate-weakened" not in {
+        item["code"] for item in report["issues"]
+    }
+
+
 def test_skill_contracts_preserve_provenance_and_retrospective_boundaries() -> None:
     spec_skill = (PROJECT_ROOT / ".codex/skills/spec-it/SKILL.md").read_text()
+    test_skill = (PROJECT_ROOT / ".codex/skills/test-it/SKILL.md").read_text()
     retrospect_skill = (
         PROJECT_ROOT / ".codex/skills/retrospect-it/SKILL.md"
     ).read_text()
 
     assert "provenance" in spec_skill
+    assert "context.original_request" in spec_skill
     assert "Optional" in spec_skill
+    assert "mandatory requirement" in test_skill
+    assert "traceability artifact" in test_skill
     assert "OBSERVE / PROPOSE ONLY" in retrospect_skill
     assert "closed" in retrospect_skill
+    assert "pending retrospective" in retrospect_skill
     assert "Never directly" in retrospect_skill
     assert "Human approval" in retrospect_skill
 

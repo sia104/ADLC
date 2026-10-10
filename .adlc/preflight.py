@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import platform
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -14,7 +15,7 @@ from urllib.parse import urlsplit
 from adlc_config import ConfigError, load_config
 from gitops import GitOpsError, git_identity, is_project_repository
 
-EXPECTED_ADLC_VERSION = "V0.5"
+EXPECTED_ADLC_VERSION = "V0.6"
 REQUIRED_SKILLS = ("spec-it", "implement-it", "test-it", "retrospect-it")
 
 
@@ -73,6 +74,61 @@ def issue(
     }
 
 
+def normalize_command(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def workflow_run_commands(workflow_text: str) -> set[str]:
+    commands: list[str] = []
+    lines = workflow_text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        match = re.match(r"^(\s*)run:\s*(.*)$", line)
+        if match is None:
+            index += 1
+            continue
+        indent = len(match.group(1))
+        rest = match.group(2).strip()
+        if rest in {">", "|", ">-", "|-"}:
+            parts: list[str] = []
+            index += 1
+            while index < len(lines):
+                child = lines[index]
+                if child.strip() and len(child) - len(child.lstrip(" ")) <= indent:
+                    break
+                parts.append(child.strip())
+                index += 1
+            commands.append(normalize_command(" ".join(parts)))
+            continue
+        commands.append(normalize_command(rest.strip("'\"")))
+        index += 1
+    return set(commands)
+
+
+def evidence_locality_issues(project_root: Path) -> list[dict[str, Any]]:
+    problems: list[dict[str, Any]] = []
+    ignored = command_output(
+        project_root, "git", "check-ignore", ".adlc/evidence/example.json"
+    )
+    if ignored is None:
+        problems.append(
+            issue(
+                "adlc-evidence-not-ignored",
+                ".adlc/evidence/ must be ignored by Git",
+            )
+        )
+    tracked = command_output(project_root, "git", "ls-files", ".adlc/evidence")
+    if tracked:
+        problems.append(
+            issue(
+                "adlc-evidence-tracked",
+                ".adlc/evidence/ contains tracked files",
+            )
+        )
+    return problems
+
+
 def quality_gate_issues(
     project_root: Path, adlc_root: Path, base_branch: str
 ) -> list[dict[str, Any]]:
@@ -122,8 +178,10 @@ def quality_gate_issues(
             )
     workflow = project_root / baseline.get("workflow", "")
     workflow_text = workflow.read_text(encoding="utf-8") if workflow.is_file() else ""
+    workflow_commands = workflow_run_commands(workflow_text)
+    normalized_workflow_commands = {normalize_command(command) for command in workflow_commands}
     for command in baseline.get("required_commands", []):
-        if command not in workflow_text:
+        if normalize_command(command) not in normalized_workflow_commands:
             problems.append(
                 issue(
                     "quality-gate-weakened",
@@ -247,6 +305,7 @@ def run_preflight(
             problems.append(
                 issue("missing-tool", f"Required tool is unavailable: {tool}")
             )
+    problems.extend(evidence_locality_issues(project_root))
     problems.extend(quality_gate_issues(project_root, adlc_root, base))
 
     return {
