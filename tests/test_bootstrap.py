@@ -22,7 +22,7 @@ def make_source(tmp_path: Path) -> Path:
     (source / ".github" / "workflows").mkdir(parents=True)
 
     (source / ".adlc" / "VERSION").write_text(
-        "V0.5\n",
+        "V0.6\n",
         encoding="utf-8",
     )
 
@@ -105,7 +105,7 @@ def install(source: Path, target: Path) -> dict[str, object]:
         source,
         target,
         source_repository="https://example.invalid/ADLC.git",
-        source_ref="v0.5.0",
+        source_ref="v0.6.0",
         source_commit="abc123",
     )
 
@@ -116,7 +116,7 @@ def test_installs_reusable_adlc(tmp_path: Path) -> None:
 
     record = install(source, target)
 
-    assert (target / ".adlc" / "VERSION").read_text().strip() == "V0.5"
+    assert (target / ".adlc" / "VERSION").read_text().strip() == "V0.6"
     assert (target / "AGENTS.md").exists()
     assert (
         target
@@ -139,7 +139,7 @@ def test_installs_reusable_adlc(tmp_path: Path) -> None:
         / "private.txt"
     ).exists()
 
-    assert record["source_ref"] == "v0.5.0"
+    assert record["source_ref"] == "v0.6.0"
 
 
 def test_records_install_provenance(tmp_path: Path) -> None:
@@ -154,9 +154,9 @@ def test_records_install_provenance(tmp_path: Path) -> None:
         )
     )
 
-    assert data["adlc_version"] == "V0.5"
+    assert data["adlc_version"] == "V0.6"
     assert data["source_commit"] == "abc123"
-    assert data["source_ref"] == "v0.5.0"
+    assert data["source_ref"] == "v0.6.0"
     assert data["managed_files"]
 
 

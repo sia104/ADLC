@@ -1,4 +1,4 @@
-"""Deterministic Git and GitHub operations for ADLC V0.4."""
+"""Deterministic Git and GitHub operations for ADLC V0.6."""
 
 from __future__ import annotations
 
@@ -107,6 +107,91 @@ def is_project_repository(project_root: Path, runner: RunCommand = run_command) 
     return top is not None and Path(top).resolve() == project_root.resolve()
 
 
+def ensure_evidence_local(project_root: Path, runner: RunCommand = run_command) -> None:
+    ignored = output(
+        runner,
+        project_root,
+        "git",
+        "check-ignore",
+        ".adlc/evidence/example.json",
+        required=False,
+    )
+    if ignored is None:
+        raise GitOpsError(".adlc/evidence/ must be ignored by Git")
+    tracked = output(
+        runner, project_root, "git", "ls-files", ".adlc/evidence", required=False
+    )
+    if tracked:
+        raise GitOpsError(".adlc/evidence/ contains tracked files")
+
+
+def prepare_base_branch(
+    project_root: Path,
+    config: AdlcConfig,
+    runner: RunCommand = run_command,
+) -> None:
+    origin = output(
+        runner,
+        project_root,
+        "git",
+        "remote",
+        "get-url",
+        "origin",
+        required=False,
+    )
+    if not origin:
+        return
+    output(runner, project_root, "git", "fetch", "origin", config.base_branch)
+    local = output(
+        runner,
+        project_root,
+        "git",
+        "rev-parse",
+        config.base_branch,
+        required=False,
+    )
+    remote = output(
+        runner,
+        project_root,
+        "git",
+        "rev-parse",
+        f"origin/{config.base_branch}",
+        required=False,
+    )
+    if not local or not remote or local == remote:
+        return
+    merge_base = output(
+        runner,
+        project_root,
+        "git",
+        "merge-base",
+        config.base_branch,
+        f"origin/{config.base_branch}",
+        required=False,
+    )
+    if merge_base != local:
+        raise GitOpsError("base branch diverged from origin; manual resolution required")
+    current = output(runner, project_root, "git", "branch", "--show-current")
+    if current != config.base_branch:
+        raise GitOpsError(
+            "base branch is behind origin; switch to the base branch for "
+            "fast-forward preparation"
+        )
+    status = output(
+        runner, project_root, "git", "status", "--porcelain", required=False
+    )
+    if status:
+        raise GitOpsError("working tree must be clean before base preparation")
+    output(
+        runner,
+        project_root,
+        "git",
+        "merge",
+        "--ff-only",
+        f"origin/{config.base_branch}",
+    )
+
+
 def publication_hazards(project_root: Path) -> list[dict[str, str]]:
     hazards: list[dict[str, str]] = []
     for path in sorted(project_root.rglob("*")):
@@ -199,10 +284,12 @@ def bootstrap_project(
     project_root = project_root.resolve()
     git_identity(project_root, runner)
     created_repository = False
-    if not is_project_repository(project_root, runner):
+    existing_repository = is_project_repository(project_root, runner)
+    if not existing_repository:
         output(runner, project_root, "git", "init", "-b", config.base_branch)
         created_repository = True
 
+    ensure_evidence_local(project_root, runner)
     head = output(runner, project_root, "git", "rev-parse", "HEAD", required=False)
     if head is None:
         if config.repository_visibility == "public":
@@ -220,6 +307,8 @@ def bootstrap_project(
         output(runner, project_root, "git", "commit", "-m", "Initialize ADLC repository")
 
     origin = ensure_origin(project_root, config, runner)
+    if existing_repository:
+        prepare_base_branch(project_root, config, runner)
     remote_base = output(
         runner,
         project_root,
@@ -248,11 +337,13 @@ def publish_feature(
     config: AdlcConfig,
     runner: RunCommand = run_command,
     verification_summary: str = "deterministic verification passed",
+    pr_title: str | None = None,
     on_pushed: Callable[[str, str, str], None] | None = None,
 ) -> PublicationResult:
     if not is_project_repository(project_root, runner):
         raise GitOpsError("project root is not a Git repository")
     git_identity(project_root, runner)
+    ensure_evidence_local(project_root, runner)
     branch = output(runner, project_root, "git", "branch", "--show-current")
     if not branch:
         raise GitOpsError("current Git branch is unavailable")
@@ -283,7 +374,7 @@ def publish_feature(
     if on_pushed is not None:
         on_pushed(origin, branch, commit)
     ensure_github(runner, project_root)
-    title = output(runner, project_root, "git", "log", "-1", "--format=%s")
+    fallback_title = output(runner, project_root, "git", "log", "-1", "--format=%s")
     commits = output(
         runner,
         project_root,
@@ -307,7 +398,7 @@ def publish_feature(
         "--head",
         branch,
         "--title",
-        title or "ADLC feature",
+        pr_title or fallback_title or "ADLC feature",
         "--body",
         body,
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -16,6 +17,7 @@ from gitops import (  # noqa: E402
     GitOpsError,
     bootstrap_project,
     ensure_origin,
+    prepare_base_branch,
     publication_hazards,
     publish_feature,
 )
@@ -52,6 +54,9 @@ if args[:2] == ["pr", "create"]:
     marker = os.environ.get("ADLC_TEST_PUSH_MARKER")
     if marker and not os.path.exists(marker):
         raise SystemExit(3)
+    args_path = os.environ.get("ADLC_TEST_PR_ARGS")
+    if args_path:
+        open(args_path, "w", encoding="utf-8").write(json.dumps(args))
     print("https://example.invalid/example/project/pull/3")
     raise SystemExit(0)
 if args[:2] == ["pr", "view"]:
@@ -110,6 +115,7 @@ def test_existing_repository_and_origin_are_preserved(tmp_path: Path) -> None:
     command("git", "init", "-b", "master", cwd=repo)
     configure_identity(repo)
     (repo / "README.md").write_text("existing\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".adlc/evidence/\n", encoding="utf-8")
     command("git", "add", ".", cwd=repo)
     command("git", "commit", "-m", "existing", cwd=repo)
     remote = tmp_path / "existing.git"
@@ -189,6 +195,7 @@ def test_publish_pushes_feature_and_creates_pr(
     command("git", "init", "-b", "master", cwd=repo)
     configure_identity(repo)
     (repo / "README.md").write_text("base\n", encoding="utf-8")
+    (repo / ".gitignore").write_text(".adlc/evidence/\n", encoding="utf-8")
     command("git", "add", ".", cwd=repo)
     command("git", "commit", "-m", "base", cwd=repo)
     remote = tmp_path / "publish.git"
@@ -201,7 +208,9 @@ def test_publish_pushes_feature_and_creates_pr(
     command("git", "commit", "-m", "Add feature", cwd=repo)
     fake_gh(tmp_path, monkeypatch, tmp_path / "unused.git")
     marker = tmp_path / "push-recorded"
+    pr_args = tmp_path / "pr-args.json"
     monkeypatch.setenv("ADLC_TEST_PUSH_MARKER", str(marker))
+    monkeypatch.setenv("ADLC_TEST_PR_ARGS", str(pr_args))
 
     pushed: list[tuple[str, str, str]] = []
 
@@ -210,14 +219,50 @@ def test_publish_pushes_feature_and_creates_pr(
         marker.touch()
 
     result = publish_feature(
-        repo, AdlcConfig("master", "private"), on_pushed=record_push
+        repo,
+        AdlcConfig("master", "private"),
+        pr_title="Approved Spec Title",
+        on_pushed=record_push,
     )
 
     assert result.branch == "feature/example"
     assert result.pull_request_number == 3
     assert result.pull_request_url.endswith("/pull/3")
+    args = json.loads(pr_args.read_text(encoding="utf-8"))
+    assert args[args.index("--title") + 1] == "Approved Spec Title"
     assert pushed == [(str(remote), "feature/example", result.commit)]
     assert command("git", "rev-parse", "@{upstream}", cwd=repo).stdout.strip() == result.commit
+
+
+def test_base_preparation_fast_forwards_and_blocks_feature_branch(
+    tmp_path: Path,
+) -> None:
+    remote = tmp_path / "origin.git"
+    command("git", "init", "--bare", str(remote), cwd=tmp_path)
+    repo = tmp_path / "repo"
+    command("git", "clone", str(remote), str(repo), cwd=tmp_path)
+    command("git", "switch", "-c", "master", cwd=repo)
+    configure_identity(repo)
+    (repo / ".gitignore").write_text(".adlc/evidence/\n", encoding="utf-8")
+    (repo / "README.md").write_text("base\n", encoding="utf-8")
+    command("git", "add", ".", cwd=repo)
+    command("git", "commit", "-m", "base", cwd=repo)
+    command("git", "push", "-u", "origin", "master", cwd=repo)
+
+    other = tmp_path / "other"
+    command("git", "clone", str(remote), str(other), cwd=tmp_path)
+    configure_identity(other)
+    (other / "README.md").write_text("remote\n", encoding="utf-8")
+    command("git", "commit", "-am", "remote update", cwd=other)
+    command("git", "push", cwd=other)
+
+    command("git", "switch", "-c", "feature/example", cwd=repo)
+    with pytest.raises(GitOpsError, match="base branch is behind"):
+        prepare_base_branch(repo, AdlcConfig("master", "private"))
+
+    command("git", "switch", "master", cwd=repo)
+    prepare_base_branch(repo, AdlcConfig("master", "private"))
+    assert (repo / "README.md").read_text(encoding="utf-8") == "remote\n"
 
 
 def test_github_auth_failure_does_not_configure_origin(tmp_path: Path) -> None:

@@ -2,7 +2,7 @@
 
 Installed reusable ADLC runtime.
 
-Current ADLC version: **V0.5**
+Current ADLC version: **V0.6**
 
 This directory contains the deterministic infrastructure used to run and verify the project's AI-assisted Application Development Life Cycle.
 
@@ -90,7 +90,7 @@ The installed ADLC version is defined by:
 For this installation:
 
 ```text
-V0.5
+V0.6
 ```
 
 The installation source and provenance are recorded in:
@@ -564,7 +564,7 @@ Installation provenance and hashes are stored in:
 .adlc/install.json
 ```
 
-V0.5 does not currently implement automatic upgrades or managed-file merging.
+V0.6 does not currently implement automatic upgrades or managed-file merging.
 
 Do not assume that manually modified ADLC files can later be upgraded automatically without conflict.
 
@@ -607,7 +607,7 @@ The runtime code and canonical version must agree.
 For this release:
 
 ```text
-V0.5
+V0.6
 ```
 
 ## Git identity missing
@@ -661,9 +661,9 @@ Changes that weaken deterministic verification require explicit human approval.
 
 ---
 
-# What V0.5 does not do
+# What V0.6 does not do
 
-V0.5 intentionally does not provide:
+V0.6 intentionally does not provide:
 
 * automatic ADLC upgrades;
 * automatic conflict merging;
