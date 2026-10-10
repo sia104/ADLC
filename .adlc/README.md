@@ -373,6 +373,10 @@ candidate lessons
 
 Evidence should not claim workflow steps succeeded before the underlying filesystem, Git, GitHub, CI, or human action actually succeeded.
 
+After successful closure, retrospective remains visibly pending until
+`retrospect-it` completes and the lifecycle records the retrospective stage.
+Completion records whether candidate lessons were proposed.
+
 ---
 
 # Raw and derived evidence
@@ -469,6 +473,16 @@ The reusable quality-gate definition is stored in:
 ```
 
 Existing deterministic quality gates must not be silently weakened.
+
+Required deterministic gates are executed with:
+
+```bash
+python .adlc/evidence.py gate-run RUN_ID GATE_NAME
+```
+
+The recorded result includes execution mode, exit code, `HEAD`, and a
+deterministic working-tree fingerprint. If `HEAD` or the fingerprint changes,
+the gate result is stale and must be rerun before lifecycle progression.
 
 ---
 

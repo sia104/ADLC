@@ -445,6 +445,11 @@ future ADLC improvement
 
 The ADLC must never automatically promote an AI-generated lesson into workflow policy.
 
+After successful run closure, retrospective is recorded as the required pending
+next action. The workflow should invoke `retrospect-it`; completion records
+whether any candidate lessons were proposed, and those lessons remain proposals
+until a human promotes them.
+
 ---
 
 # ADLC verification
@@ -485,6 +490,17 @@ uv run --project .adlc --frozen mypy \
   .adlc/adlc_config.py \
   .adlc/gitops.py
 ```
+
+Required deterministic quality gates are executed through:
+
+```bash
+python .adlc/evidence.py gate-run RUN_ID GATE_NAME
+```
+
+`gate-run` records the exact command, execution mode, timestamps, exit code,
+output, `HEAD`, branch, working-tree status, and a deterministic working-tree
+fingerprint. If `HEAD` or the fingerprint changes after execution, the gate is
+stale and must be rerun before it can authorize lifecycle progression.
 
 ---
 
@@ -649,7 +665,7 @@ The information recorded in `.adlc/install.json` is intended to support a future
 Canonical releases should use Git tags such as:
 
 ```text
-v0.6.0
+v0.5.0
 v0.6.0
 v0.7.0
 ```

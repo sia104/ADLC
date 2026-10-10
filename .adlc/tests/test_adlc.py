@@ -104,6 +104,26 @@ def run_fast_quality_gate(repo: Path, run_id: str) -> None:
     assert json.loads(result.stdout)["status"] == "pass"
 
 
+def advance_to_implementation(repo: Path, tmp_path: Path, run_id: str) -> None:
+    spec = tmp_path / f"{run_id}-spec.md"
+    spec.write_text("# Approved specification\n", encoding="utf-8")
+    spec_ref = adlc(repo, "attach", run_id, "outputs", str(spec)).stdout.strip()
+    adlc(
+        repo,
+        "transition",
+        run_id,
+        "human-specification-approval",
+        "pass",
+        "--evidence",
+        spec_ref,
+    )
+    adlc(repo, "specification", run_id, spec_ref)
+    adlc(repo, "decision", run_id, "specification", "approved")
+    command("git", "checkout", "-b", f"feature/{run_id}", cwd=repo)
+    adlc(repo, "transition", run_id, "feature-branch", "pass")
+    adlc(repo, "transition", run_id, "implementation", "pass")
+
+
 def manifest(repo: Path, run_id: str) -> dict[str, object]:
     path = repo / ".adlc" / "evidence" / "runs" / run_id / "manifest.json"
     return json.loads(path.read_text(encoding="utf-8"))
@@ -128,6 +148,9 @@ if args[:2] == ["repo", "create"]:
     print("https://example.invalid/example/repository")
     raise SystemExit(0)
 if args[:2] == ["pr", "create"]:
+    args_path = __import__("os").environ.get("ADLC_TEST_PR_ARGS")
+    if args_path:
+        open(args_path, "w", encoding="utf-8").write(json.dumps(args))
     print("https://example.invalid/example/repository/pull/7")
     raise SystemExit(0)
 if args[:2] == ["pr", "view"]:
@@ -365,8 +388,14 @@ def test_closed_run_can_enter_retrospective_and_propose_only(
     command("git", "commit", "-m", "Use private test publication", cwd=repo)
     run_fast_quality_gate(repo, run_id)
     install_fake_gh(tmp_path, monkeypatch, tmp_path / "unused.git")
+    pr_args = tmp_path / "pr-args.json"
+    monkeypatch.setenv("ADLC_TEST_PR_ARGS", str(pr_args))
     publication = adlc(repo, "publish", run_id, check=False)
     assert publication.returncode == 0, publication.stderr
+    pr_create_args = json.loads(pr_args.read_text(encoding="utf-8"))
+    assert pr_create_args[pr_create_args.index("--title") + 1] == (
+        "Approved specification"
+    )
     published = manifest(repo, run_id)
     assert published["git"]["pull_request"]["number"] == 7  # type: ignore[index]
     assert published["git"]["publication"]["branch"] == "feature/complete"  # type: ignore[index]
@@ -379,6 +408,9 @@ def test_closed_run_can_enter_retrospective_and_propose_only(
     adlc(repo, "merge-context", run_id, "merged", "--final-commit", head)
     adlc(repo, "close", run_id)
     assert manifest(repo, run_id)["stages"]["merge"]["status"] == "pass"  # type: ignore[index]
+    pending = manifest(repo, run_id)["retrospective"]  # type: ignore[index]
+    assert pending["status"] == "pending"
+    assert pending["required_action"] == "invoke retrospect-it"
     manifest_path = repo / ".adlc/evidence/runs" / run_id / "manifest.json"
     closed_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     inconsistent = json.loads(json.dumps(closed_manifest))
@@ -388,7 +420,6 @@ def test_closed_run_can_enter_retrospective_and_propose_only(
     assert rejected.returncode == 2
     assert "passing merge stage" in rejected.stderr
     manifest_path.write_text(json.dumps(closed_manifest), encoding="utf-8")
-    adlc(repo, "transition", run_id, "retrospective", "pass")
     adlc(
         repo,
         "lesson-create",
@@ -402,6 +433,7 @@ def test_closed_run_can_enter_retrospective_and_propose_only(
         "--target",
         "no-action",
     )
+    adlc(repo, "transition", run_id, "retrospective", "pass")
 
     candidate = (
         repo
@@ -415,6 +447,10 @@ def test_closed_run_can_enter_retrospective_and_propose_only(
         json.loads(candidate.read_text(encoding="utf-8"))["automatically_applied"]
         is False
     )
+    retrospective = manifest(repo, run_id)["retrospective"]  # type: ignore[index]
+    assert retrospective["status"] == "complete"
+    assert retrospective["candidate_lessons_proposed"] is True
+    assert retrospective["candidate_lesson_count"] == 1
     assert manifest(repo, run_id)["lifecycle"]["open"] is False  # type: ignore[index]
 
 
@@ -434,6 +470,16 @@ def test_required_gate_execution_and_freshness_are_enforced(tmp_path: Path) -> N
     )
     assert manual.returncode == 2
     assert "cannot be manually recorded" in manual.stderr
+    manual_command = adlc(
+        repo,
+        "gate",
+        run_id,
+        "git status --short",
+        "pass",
+        check=False,
+    )
+    assert manual_command.returncode == 2
+    assert "cannot be manually recorded" in manual_command.stderr
 
     run_fast_quality_gate(repo, run_id)
     spec = tmp_path / "spec.md"
@@ -462,6 +508,108 @@ def test_required_gate_execution_and_freshness_are_enforced(tmp_path: Path) -> N
     assert "stale" in blocked.stderr
     run_fast_quality_gate(repo, run_id)
     adlc(repo, "transition", run_id, "independent-testing", "pass")
+
+
+def test_required_gate_is_stale_when_working_tree_changes_without_head_change(
+    tmp_path: Path,
+) -> None:
+    repo, _ = make_repository(tmp_path)
+    run_id = create_run(repo, tmp_path)
+    command("git", "checkout", "-b", "feature/dirty-gate", cwd=repo)
+    install_fast_quality_gate(repo)
+    advance_to_implementation(repo, tmp_path, run_id)
+    run_fast_quality_gate(repo, run_id)
+
+    (repo / "README.md").write_text("dirty but uncommitted\n", encoding="utf-8")
+    assert command("git", "rev-parse", "HEAD", cwd=repo).stdout.strip()
+    blocked = adlc(
+        repo, "transition", run_id, "independent-testing", "pass", check=False
+    )
+
+    assert blocked.returncode == 2
+    assert "stale" in blocked.stderr
+
+
+def test_unignored_evidence_blocks_lifecycle_completion(tmp_path: Path) -> None:
+    repo, _ = make_repository(tmp_path)
+    run_id = create_run(repo, tmp_path)
+    command("git", "checkout", "-b", "feature/unignored-evidence", cwd=repo)
+    install_fast_quality_gate(repo)
+    advance_to_implementation(repo, tmp_path, run_id)
+    gitignore = repo / ".gitignore"
+    gitignore.write_text(
+        "\n".join(
+            line
+            for line in gitignore.read_text(encoding="utf-8").splitlines()
+            if line.strip() != ".adlc/evidence/"
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    command("git", "add", ".gitignore", cwd=repo)
+    command("git", "commit", "-m", "Stop ignoring evidence", cwd=repo)
+    run_fast_quality_gate(repo, run_id)
+
+    blocked = adlc(
+        repo, "transition", run_id, "independent-testing", "pass", check=False
+    )
+
+    assert blocked.returncode == 2
+    assert ".adlc/evidence/ must be ignored" in blocked.stderr
+
+
+def test_tracked_evidence_blocks_lifecycle_completion(tmp_path: Path) -> None:
+    repo, _ = make_repository(tmp_path)
+    run_id = create_run(repo, tmp_path)
+    command("git", "checkout", "-b", "feature/tracked-evidence", cwd=repo)
+    install_fast_quality_gate(repo)
+    advance_to_implementation(repo, tmp_path, run_id)
+    tracked = repo / ".adlc" / "evidence" / "tracked.txt"
+    tracked.parent.mkdir(parents=True, exist_ok=True)
+    tracked.write_text("tracked evidence\n", encoding="utf-8")
+    command("git", "add", "-f", ".adlc/evidence/tracked.txt", cwd=repo)
+    command("git", "commit", "-m", "Track local evidence", cwd=repo)
+    run_fast_quality_gate(repo, run_id)
+
+    blocked = adlc(
+        repo, "transition", run_id, "independent-testing", "pass", check=False
+    )
+
+    assert blocked.returncode == 2
+    assert ".adlc/evidence/ contains tracked files" in blocked.stderr
+
+
+def test_unignored_evidence_blocks_publication_and_records_blocker(
+    tmp_path: Path,
+) -> None:
+    repo, _ = make_repository(tmp_path)
+    run_id = create_run(repo, tmp_path)
+    command("git", "checkout", "-b", "feature/publication-evidence", cwd=repo)
+    install_fast_quality_gate(repo)
+    advance_to_implementation(repo, tmp_path, run_id)
+    run_fast_quality_gate(repo, run_id)
+    adlc(repo, "transition", run_id, "independent-testing", "pass")
+    adlc(repo, "stage", run_id, "test-it", "pass")
+    gitignore = repo / ".gitignore"
+    gitignore.write_text(
+        "\n".join(
+            line
+            for line in gitignore.read_text(encoding="utf-8").splitlines()
+            if line.strip() != ".adlc/evidence/"
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    command("git", "add", ".gitignore", cwd=repo)
+    command("git", "commit", "-m", "Stop ignoring evidence before publication", cwd=repo)
+    run_fast_quality_gate(repo, run_id)
+
+    blocked = adlc(repo, "publish", run_id, check=False)
+
+    assert blocked.returncode == 2
+    assert ".adlc/evidence/ must be ignored" in blocked.stderr
+    blocker = manifest(repo, run_id)["git"]["publication_blocker"]  # type: ignore[index]
+    assert ".adlc/evidence/ must be ignored" in blocker["message"]
 
 
 def test_failing_required_gate_records_fail_not_pass(tmp_path: Path) -> None:
