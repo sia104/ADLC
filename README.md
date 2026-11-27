@@ -31,6 +31,25 @@ The current development history is:
 * **V0.4** — automated Git/GitHub bootstrap, feature-branch publication, pull-request creation, and public-repository safety checks.
 * **V0.5** — added versioned ADLC bootstrap distribution so the reusable ADLC can be installed into projects without manually copying files.
 * **V0.6** — hardened deterministic quality gates, run provenance, evidence locality, traceability, retrospective workflow, PR title intent, and base-branch preparation.
+* **ASF V1 (proposed)** — evolves the ADLC into an Autonomous Software Factory. Specification pending approval; not yet implemented.
+
+---
+
+## Next: Autonomous Software Factory (ASF V1)
+
+> **Status:** proposed. The specification is [`specs/asf-v1.md`](specs/asf-v1.md) and is pending human approval. Everything below this section still describes the current V0.6 release.
+
+The goal: a spec or goal goes in; tested, working, documented software comes out and lands on the base branch with verifiable evidence. The human decides what to build, answers one batch of up to four judgment questions, and steers on taste. Agents do the rest.
+
+Planned design (see the spec for details):
+
+* **Control plane:** T3 Code threads, worktree-isolated child agents, environment links and scheduled tasks, running on Claude and Codex subscriptions across a Mac (interactive) and a Linux box over Tailscale (unattended).
+* **Deterministic core:** an `asf` CLI, evolved from `.adlc/`, is the only writer of run state. It executes gates itself, computes the risk tier, keeps a hash-chained ledger and performs the merge. Agent claims never advance state.
+* **Builder ≠ judge:** Opus builds; a fresh Codex reviewer repeats rounds until one finds no accepted issues; hidden holdout scenarios, written from the spec before implementation, are run against the real app by a separate evaluator.
+* **Risk-tiered autonomy:** the agent merges once its tier's gates pass. High-risk changes also require GitHub CI and a second independent reviewer.
+* **Modes:** Build (spec → landed software), Lab (multi-agent research against a measurable goals file), Maintain (scheduled), Release (decide first, then run unattended).
+
+Design basis: StrongDM Software Factory, Anthropic's long-running harness posts, OpenAI Symphony and harness engineering, GitHub Spec Kit, Superpowers, the `good-engineering` skill, Impeccable, and Tristan Manchester's "How I work with agents".
 
 ---
 
